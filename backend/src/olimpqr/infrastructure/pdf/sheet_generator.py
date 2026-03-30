@@ -1,6 +1,7 @@
 """Answer sheet PDF generator with QR code."""
 
 from io import BytesIO
+import json
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
@@ -67,6 +68,34 @@ class SheetGenerator:
     def __init__(self):
         self.qr_service = QRService()
         self.page_width, self.page_height = A4
+        self.template_overrides = self._load_template_overrides()
+
+    def _load_template_overrides(self) -> dict:
+        """Load optional JSON template for easy non-code customization."""
+        candidate_paths: list[str] = []
+        if settings.sheet_template_path:
+            candidate_paths.append(settings.sheet_template_path)
+
+        candidate_paths.append(os.path.join(os.path.dirname(__file__), "sheet_template.json"))
+        candidate_paths.append(os.path.join(os.path.dirname(__file__), "sheet_template.override.json"))
+
+        for path in candidate_paths:
+            if not path:
+                continue
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+            except Exception as e:
+                print(f"Warning: could not load sheet template {path}: {e}")
+        return {}
+
+    def _template_value(self, key: str, default):
+        value = self.template_overrides.get(key, default)
+        return value
 
     def generate_answer_sheet(
         self,
@@ -116,6 +145,8 @@ class SheetGenerator:
     def _draw_logo(self, c: canvas.Canvas):
         """Draw logo in top left corner."""
         import os
+        if not self._template_value("show_logo", True):
+            return
         logo_path = os.path.join(os.path.dirname(__file__), 'logo_black.png')
 
         if os.path.exists(logo_path):
@@ -154,7 +185,7 @@ class SheetGenerator:
         c.drawCentredString(
             self.page_width / 2,
             self.page_height - 30*mm,
-            "БЛАНК ОТВЕТОВ"
+            self._template_value("title", "БЛАНК ОТВЕТОВ")
         )
         # Variant number intentionally not displayed per requirement
 
@@ -260,7 +291,7 @@ class SheetGenerator:
         c.drawCentredString(
             self.page_width / 2,
             warning_y,
-            "ВНИМАНИЕ! Заполняйте ответы строго внутри рамки"
+            self._template_value("warning_text", "ВНИМАНИЕ! Заполняйте ответы строго внутри рамки")
         )
         c.setFillColor(colors.black)
 
@@ -297,12 +328,12 @@ class SheetGenerator:
         c.setFont(_FONT_REGULAR, 8)
         c.setFillColor(colors.grey)
 
-        footer_text = [
+        footer_text = self._template_value("footer_lines", [
             "Инструкции:",
             "1. Отвечайте четко и разборчиво",
             "2. Укажите итоговый балл в специальном поле",
             "3. Не сгибайте и не пачкайте лист"
-        ]
+        ])
 
         y = 30*mm
         for line in footer_text:

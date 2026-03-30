@@ -36,6 +36,10 @@ class CreateCompetitionUseCase:
             registration_end=dto.registration_end,
             variants_count=dto.variants_count,
             max_score=dto.max_score,
+            is_special=dto.is_special,
+            special_tours_count=dto.special_tours_count,
+            special_tour_modes=dto.special_tour_modes,
+            special_settings=dto.special_settings,
             status=CompetitionStatus.DRAFT,
             created_by=created_by_user_id
         )

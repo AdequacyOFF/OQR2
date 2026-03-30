@@ -18,6 +18,10 @@ class CreateCompetitionDTO:
     registration_end: datetime
     variants_count: int
     max_score: int
+    is_special: bool = False
+    special_tours_count: int | None = None
+    special_tour_modes: list[str] | None = None
+    special_settings: dict | None = None
 
 
 @dataclass
@@ -29,6 +33,10 @@ class UpdateCompetitionDTO:
     registration_end: datetime | None = None
     variants_count: int | None = None
     max_score: int | None = None
+    is_special: bool | None = None
+    special_tours_count: int | None = None
+    special_tour_modes: list[str] | None = None
+    special_settings: dict | None = None
 
 
 @dataclass
@@ -41,6 +49,10 @@ class CompetitionDTO:
     registration_end: datetime
     variants_count: int
     max_score: int
+    is_special: bool
+    special_tours_count: int | None
+    special_tour_modes: list[str] | None
+    special_settings: dict | None
     status: CompetitionStatus
     created_by: UUID
     created_at: datetime

@@ -15,6 +15,8 @@ class RegisterRequest(BaseModel):
     school: str = Field(..., min_length=2, description="Название школы (обязательно)")
     grade: int | None = Field(None, ge=1, le=12, description="Класс 1-12 (опционально)")
     institution_id: UUID | None = Field(None, description="ID учебного учреждения")
+    institution_location: str | None = Field(None, min_length=2, description="Город/филиал учебного учреждения")
+    is_captain: bool = Field(False, description="Является ли участник капитаном команды")
     dob: dt.date | None = Field(None, description="Дата рождения")
 
     @field_validator("password")

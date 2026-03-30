@@ -22,6 +22,8 @@ export interface ParticipantProfile {
   school: string;
   grade: number | null;
   institution_id: string | null;
+  institution_location: string | null;
+  is_captain: boolean;
   dob: string | null;
   created_at: string;
   updated_at: string;
@@ -35,6 +37,10 @@ export interface Competition {
   registration_end: string;
   variants_count: number;
   max_score: number;
+  is_special: boolean;
+  special_tours_count: number | null;
+  special_tour_modes: string[] | null;
+  special_settings: Record<string, unknown> | null;
   status: string;
   created_by: string;
   created_at: string;
@@ -137,6 +143,8 @@ export interface AdminRegistrationItem {
   participant_id: string;
   participant_name: string;
   participant_school: string;
+  participant_institution_location: string | null;
+  participant_is_captain: boolean;
   institution_name: string | null;
   entry_token: string | null;
   status: string;

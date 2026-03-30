@@ -44,6 +44,10 @@ async def get_my_profile(
         full_name=participant.full_name,
         school=participant.school,
         grade=participant.grade,
+        institution_id=participant.institution_id,
+        institution_location=participant.institution_location,
+        is_captain=participant.is_captain,
+        dob=participant.dob,
         created_at=participant.created_at,
         updated_at=participant.updated_at
     )
@@ -75,7 +79,10 @@ async def update_my_profile(
         participant.update_profile(
             full_name=request.full_name,
             school=request.school,
-            grade=request.grade
+            grade=request.grade,
+            institution_location=request.institution_location,
+            is_captain=request.is_captain,
+            dob=request.dob,
         )
 
         # Save to database
@@ -87,6 +94,10 @@ async def update_my_profile(
             full_name=updated_participant.full_name,
             school=updated_participant.school,
             grade=updated_participant.grade,
+            institution_id=updated_participant.institution_id,
+            institution_location=updated_participant.institution_location,
+            is_captain=updated_participant.is_captain,
+            dob=updated_participant.dob,
             created_at=updated_participant.created_at,
             updated_at=updated_participant.updated_at
         )

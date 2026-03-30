@@ -27,6 +27,10 @@ class CompetitionRepositoryImpl(CompetitionRepository):
             registration_end=entity.registration_end,
             variants_count=entity.variants_count,
             max_score=entity.max_score,
+            is_special=entity.is_special,
+            special_tours_count=entity.special_tours_count,
+            special_tour_modes=entity.special_tour_modes,
+            special_settings=entity.special_settings,
             status=entity.status,
             created_by=entity.created_by,
             created_at=entity.created_at,
@@ -72,6 +76,10 @@ class CompetitionRepositoryImpl(CompetitionRepository):
         model.registration_end = entity.registration_end
         model.variants_count = entity.variants_count
         model.max_score = entity.max_score
+        model.is_special = entity.is_special
+        model.special_tours_count = entity.special_tours_count
+        model.special_tour_modes = entity.special_tour_modes
+        model.special_settings = entity.special_settings
         model.status = entity.status
         model.updated_at = entity.updated_at
 
@@ -125,6 +133,10 @@ class CompetitionRepositoryImpl(CompetitionRepository):
             registration_end=model.registration_end,
             variants_count=model.variants_count,
             max_score=model.max_score,
+            is_special=model.is_special,
+            special_tours_count=model.special_tours_count,
+            special_tour_modes=model.special_tour_modes,
+            special_settings=model.special_settings,
             status=model.status,
             created_by=model.created_by,
             created_at=model.created_at,

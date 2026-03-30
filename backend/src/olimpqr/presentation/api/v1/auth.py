@@ -57,6 +57,8 @@ async def register(
             school=body.school,
             grade=body.grade,
             institution_id=body.institution_id,
+            institution_location=body.institution_location,
+            is_captain=body.is_captain,
             dob=body.dob,
         )
 

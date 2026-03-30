@@ -45,6 +45,18 @@ class UpdateCompetitionUseCase:
             competition.variants_count = dto.variants_count
         if dto.max_score is not None:
             competition.max_score = dto.max_score
+        if dto.is_special is not None:
+            competition.is_special = dto.is_special
+            if dto.is_special is False:
+                competition.special_tours_count = None
+                competition.special_tour_modes = None
+                competition.special_settings = None
+        if dto.special_tours_count is not None:
+            competition.special_tours_count = dto.special_tours_count
+        if dto.special_tour_modes is not None:
+            competition.special_tour_modes = dto.special_tour_modes
+        if dto.special_settings is not None:
+            competition.special_settings = dto.special_settings
 
         # Update timestamp
         competition.updated_at = datetime.utcnow()

@@ -16,6 +16,8 @@ const registerSchema = z.object({
   password: z.string().min(8, 'Пароль должен содержать минимум 8 символов'),
   full_name: z.string().min(1, 'Введите ФИО'),
   school: z.string().min(1, 'Введите название учебного учреждения'),
+  institution_location: z.string().optional(),
+  is_captain: z.boolean().default(false),
   dob: z.string().optional(),
 });
 
@@ -80,6 +82,8 @@ const RegisterPage: React.FC = () => {
         full_name: data.full_name,
         school: data.school,
         institution_id: institutionId,
+        institution_location: data.institution_location || undefined,
+        is_captain: data.is_captain,
         dob: data.dob || undefined,
       } as never);
 
@@ -159,6 +163,18 @@ const RegisterPage: React.FC = () => {
             error={errors.dob?.message}
             {...register('dob')}
           />
+          <Input
+            label="Город/филиал учебного учреждения"
+            placeholder="Например: Москва, СПб, Казань"
+            error={errors.institution_location?.message}
+            {...register('institution_location')}
+          />
+          <div className="form-group">
+            <label className="label" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input type="checkbox" {...register('is_captain')} />
+              Капитан команды
+            </label>
+          </div>
 
           {/* Document upload */}
           <div className="form-group">

@@ -61,7 +61,11 @@ async def create_competition(
             registration_start=request.registration_start,
             registration_end=request.registration_end,
             variants_count=request.variants_count,
-            max_score=request.max_score
+            max_score=request.max_score,
+            is_special=request.is_special,
+            special_tours_count=request.special_tours_count,
+            special_tour_modes=request.special_tour_modes,
+            special_settings=request.special_settings,
         )
 
         # Execute use case
@@ -176,7 +180,11 @@ async def update_competition(
             registration_start=request.registration_start,
             registration_end=request.registration_end,
             variants_count=request.variants_count,
-            max_score=request.max_score
+            max_score=request.max_score,
+            is_special=request.is_special,
+            special_tours_count=request.special_tours_count,
+            special_tour_modes=request.special_tour_modes,
+            special_settings=request.special_settings,
         )
 
         # Execute use case

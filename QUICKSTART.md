@@ -144,6 +144,23 @@ docker-compose logs
 docker-compose up -d --build --force-recreate
 ```
 
+### `InvalidPasswordError` during admin creation
+If you see:
+`asyncpg.exceptions.InvalidPasswordError: password authentication failed for user "olimpqr_user"`
+
+Check `.env` consistency:
+- `POSTGRES_PASSWORD=...`
+- `DATABASE_URL=postgresql+asyncpg://olimpqr_user:<same-password>@postgres:5432/olimpqr`
+
+These passwords must match.
+
+If you changed DB password after the first startup, Postgres volume may still have old credentials.
+Reset local data (warning: deletes local DB data):
+```bash
+docker-compose down -v
+docker-compose up -d
+```
+
 ### Reset Everything (Clean Slate)
 ```bash
 # WARNING: This deletes all data!

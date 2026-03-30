@@ -130,6 +130,7 @@ class ApproveAdmissionUseCase:
                 registration_id=registration_id,
                 competition_id=registration.competition_id,
                 variants_count=competition.variants_count,
+                competition=competition,
             )
             if seat_result:
                 room_name = seat_result.room_name

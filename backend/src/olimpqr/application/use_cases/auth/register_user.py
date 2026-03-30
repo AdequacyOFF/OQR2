@@ -67,6 +67,8 @@ class RegisterUserUseCase:
                 school=dto.school,
                 grade=dto.grade,
                 institution_id=dto.institution_id,
+                institution_location=dto.institution_location,
+                is_captain=dto.is_captain,
                 dob=dto.dob,
             )
             await self.participant_repository.create(participant)

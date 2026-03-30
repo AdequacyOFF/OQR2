@@ -18,6 +18,8 @@ class CreateStaffRequest(BaseModel):
     school: Optional[str] = None
     grade: Optional[int] = Field(None, ge=1, le=12)
     institution_id: Optional[UUID] = None
+    institution_location: Optional[str] = None
+    is_captain: bool = False
     dob: Optional[dt.date] = None
 
 
@@ -89,6 +91,8 @@ class AdminRegistrationItem(BaseModel):
     participant_id: UUID
     participant_name: str
     participant_school: str
+    participant_institution_location: Optional[str] = None
+    participant_is_captain: bool = False
     institution_name: Optional[str] = None
     entry_token: Optional[str] = None
     status: str

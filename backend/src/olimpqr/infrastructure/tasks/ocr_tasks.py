@@ -10,7 +10,7 @@ from .celery_app import celery_app
 from ..ocr import PaddleOCRService
 from ..ocr.paddle_ocr import OCRResult
 from ..storage import MinIOStorage
-from ..database.models import ScanModel, AttemptModel
+from ..database.models import ScanModel, AttemptModel, AnswerSheetModel
 from ...config import settings
 from ...domain.services import TokenService
 from ...domain.value_objects import AttemptStatus
@@ -81,20 +81,50 @@ def process_scan_ocr(self, scan_id: str) -> dict:
             object_name=scan_model.file_path,
         )
 
-        # 3. Extract QR code → find Attempt
+        # 3. Extract QR code -> find AnswerSheet/Attempt
         qr_data = ocr_service.extract_qr_from_image(image_bytes)
         attempt_model = None
+        is_primary_sheet = True
 
         if qr_data:
-            # Compute hash of sheet token
-            sheet_hash = token_service.hash_token(qr_data)
-            attempt_model = (
-                session.query(AttemptModel)
-                .filter(AttemptModel.sheet_token_hash == sheet_hash.value)
-                .first()
-            )
+            # New direct token format for Word templates: attempt:<attempt_id>:...
+            if qr_data.startswith("attempt:"):
+                parts = qr_data.split(":")
+                if len(parts) >= 2:
+                    try:
+                        parsed_attempt_id = UUID(parts[1])
+                        attempt_model = session.get(AttemptModel, parsed_attempt_id)
+                        # Word template QRs may represent cover/task docs.
+                        # Do not auto-apply OCR score for this format to avoid accidental score overwrite.
+                        is_primary_sheet = False
+                    except ValueError:
+                        attempt_model = None
+            else:
+                # Compute hash of sheet token
+                sheet_hash = token_service.hash_token(qr_data)
+                answer_sheet_model = (
+                    session.query(AnswerSheetModel)
+                    .filter(AnswerSheetModel.sheet_token_hash == sheet_hash.value)
+                    .first()
+                )
+                if answer_sheet_model:
+                    attempt_model = session.get(AttemptModel, answer_sheet_model.attempt_id)
+                    scan_model.answer_sheet_id = answer_sheet_model.id
+                    kind_value = (
+                        answer_sheet_model.kind.value
+                        if hasattr(answer_sheet_model.kind, "value")
+                        else str(answer_sheet_model.kind)
+                    )
+                    is_primary_sheet = kind_value == "primary"
+                else:
+                    # Backward compatibility for old sheets.
+                    attempt_model = (
+                        session.query(AttemptModel)
+                        .filter(AttemptModel.sheet_token_hash == sheet_hash.value)
+                        .first()
+                    )
+
             if attempt_model and scan_model.attempt_id is None:
-                # Link scan to attempt if not already linked
                 scan_model.attempt_id = attempt_model.id
 
         # 4. Run OCR on score field
@@ -114,6 +144,7 @@ def process_scan_ocr(self, scan_id: str) -> dict:
         # 6. If confidence is high enough and attempt was found, auto-apply score
         if (
             attempt_model
+            and is_primary_sheet
             and ocr_result.score is not None
             and ocr_result.confidence >= settings.ocr_confidence_threshold
         ):
@@ -148,6 +179,7 @@ def process_scan_ocr(self, scan_id: str) -> dict:
             "attempt_linked": attempt_model is not None,
             "auto_applied": (
                 attempt_model is not None
+                and is_primary_sheet
                 and ocr_result.score is not None
                 and ocr_result.confidence >= settings.ocr_confidence_threshold
             ),

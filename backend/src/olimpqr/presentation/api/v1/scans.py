@@ -11,6 +11,7 @@ from ....infrastructure.repositories import (
     ScanRepositoryImpl,
     AttemptRepositoryImpl,
     AuditLogRepositoryImpl,
+    AnswerSheetRepositoryImpl,
 )
 from ....infrastructure.storage import MinIOStorage
 from ....infrastructure.tasks.ocr_tasks import process_scan_ocr
@@ -108,6 +109,7 @@ async def list_scans(
         ScanResponse(
             id=s.id,
             attempt_id=s.attempt_id,
+            answer_sheet_id=s.answer_sheet_id,
             file_path=s.file_path,
             ocr_score=s.ocr_score,
             ocr_confidence=s.ocr_confidence,
@@ -138,6 +140,7 @@ async def get_scan(
     return ScanResponse(
         id=scan.id,
         attempt_id=scan.attempt_id,
+        answer_sheet_id=scan.answer_sheet_id,
         file_path=scan.file_path,
         ocr_score=scan.ocr_score,
         ocr_confidence=scan.ocr_confidence,
@@ -210,6 +213,18 @@ async def verify_scan_score(
     # Verify and correct scan
     scan.verify(verified_by=current_user.id, corrected_score=body.corrected_score)
     await scan_repo.update(scan)
+
+    # Extra sheets must not affect final score.
+    if scan.answer_sheet_id:
+        answer_sheet_repo = AnswerSheetRepositoryImpl(db)
+        answer_sheet = await answer_sheet_repo.get_by_id(scan.answer_sheet_id)
+        if answer_sheet and answer_sheet.kind.value == "extra":
+            return VerifyScoreResponse(
+                scan_id=scan.id,
+                attempt_id=scan.attempt_id,
+                score=body.corrected_score,
+                verified_by=current_user.id,
+            )
 
     # Apply score to attempt
     attempt = await attempt_repo.get_by_id(scan.attempt_id)

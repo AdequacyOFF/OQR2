@@ -46,3 +46,63 @@ class EventItem(BaseModel):
 class AttemptEventsResponse(BaseModel):
     """Response with attempt events."""
     events: list[EventItem]
+
+
+class ResolveSheetTokenRequest(BaseModel):
+    """Resolve a scanned sheet token to attempt context."""
+    sheet_token: str = Field(..., min_length=8)
+
+
+class ResolveSheetTokenResponse(BaseModel):
+    """Resolved context for a scanned sheet token."""
+    attempt_id: UUID
+    answer_sheet_id: UUID | None = None
+    participant_name: str
+    competition_id: UUID
+    competition_name: str
+
+
+class AttemptSheetItem(BaseModel):
+    """Single answer sheet item."""
+    id: UUID
+    kind: str
+    created_at: datetime
+    pdf_file_path: str | None = None
+
+
+class AttemptSheetsResponse(BaseModel):
+    """All answer sheets attached to one attempt."""
+    sheets: list[AttemptSheetItem]
+
+
+class SearchSheetItem(BaseModel):
+    """Search result for sheets by participant name."""
+    participant_name: str
+    competition_id: UUID
+    competition_name: str
+    attempt_id: UUID
+    answer_sheet_id: UUID
+    kind: str
+    created_at: datetime
+
+
+class SearchSheetsResponse(BaseModel):
+    """Search response for sheet lookup."""
+    items: list[SearchSheetItem]
+
+
+class SearchParticipantItem(BaseModel):
+    """Search result for participant with attempt context."""
+    participant_id: UUID
+    participant_name: str
+    competition_id: UUID
+    competition_name: str
+    attempt_id: UUID
+    room_name: str | None = None
+    seat_number: int | None = None
+    primary_answer_sheet_id: UUID | None = None
+
+
+class SearchParticipantsResponse(BaseModel):
+    """Search response for participant lookup in invigilator module."""
+    items: list[SearchParticipantItem]

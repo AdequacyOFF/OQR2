@@ -5,7 +5,7 @@ import datetime as dt
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Date, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Date, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..base import Base
@@ -50,6 +50,16 @@ class ParticipantModel(Base):
         ForeignKey("institutions.id", ondelete="SET NULL"),
         nullable=True,
         index=True
+    )
+    institution_location: Mapped[Optional[str]] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+    is_captain: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
     )
     dob: Mapped[Optional[dt.date]] = mapped_column(
         Date,

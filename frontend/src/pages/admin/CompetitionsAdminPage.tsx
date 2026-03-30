@@ -17,9 +17,13 @@ const competitionSchema = z.object({
   registration_end: z.string().min(1, 'Обязательное поле'),
   variants_count: z.coerce.number().min(1, 'Минимум 1 вариант'),
   max_score: z.coerce.number().min(1, 'Должно быть положительным'),
+  is_special: z.boolean().default(false),
+  special_tours_count: z.coerce.number().min(1, 'Минимум 1 тур').optional(),
 });
 
 type CompetitionForm = z.infer<typeof competitionSchema>;
+type SpecialTemplateKind = 'answer_blank' | 'a3_cover';
+type RoomLayoutState = Record<string, { seatsPerTable: number; teamSeatsPerTable: number }>;
 
 const CompetitionsAdminPage: React.FC = () => {
   const [competitions, setCompetitions] = useState<Competition[]>([]);
@@ -41,19 +45,77 @@ const CompetitionsAdminPage: React.FC = () => {
   const [regCompetition, setRegCompetition] = useState<Competition | null>(null);
   const [regItems, setRegItems] = useState<AdminRegistrationItem[]>([]);
   const [regLoading, setRegLoading] = useState(false);
-  const [participants, setParticipants] = useState<{ id: string; user_id: string; full_name: string; school: string }[]>([]);
+  const [participants, setParticipants] = useState<{
+    id: string;
+    user_id: string;
+    full_name: string;
+    school: string;
+    institution_location?: string | null;
+    is_captain?: boolean;
+  }[]>([]);
   const [participantSearch, setParticipantSearch] = useState('');
   const [registering, setRegistering] = useState(false);
+  const [specialTourModes, setSpecialTourModes] = useState<string[]>([]);
+  const [specialTourTasks, setSpecialTourTasks] = useState<string[]>([]);
+  const [specialSeatMatrixColumns, setSpecialSeatMatrixColumns] = useState(3);
+  const [specialCaptainsRoomId, setSpecialCaptainsRoomId] = useState('');
+  const [specialRoomLayouts, setSpecialRoomLayouts] = useState<RoomLayoutState>({});
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [admitAndDownloadLoading, setAdmitAndDownloadLoading] = useState(false);
+  const [teamTourForPrint, setTeamTourForPrint] = useState<number | null>(null);
+  const [answerTemplateFile, setAnswerTemplateFile] = useState<File | null>(null);
+  const [a3TemplateFile, setA3TemplateFile] = useState<File | null>(null);
+  const [templateUploadingKind, setTemplateUploadingKind] = useState<SpecialTemplateKind | null>(null);
+  const [templateDownloadingKind, setTemplateDownloadingKind] = useState<SpecialTemplateKind | null>(null);
 
   const {
     register,
     handleSubmit,
     reset,
     setValue,
+    watch,
     formState: { errors },
   } = useForm<CompetitionForm>({
     resolver: zodResolver(competitionSchema),
   });
+
+  const isSpecialCompetition = watch('is_special');
+  const specialToursCount = watch('special_tours_count');
+  const hasIndividualCaptainsMode = specialTourModes.some((mode) => mode === 'individual_captains');
+  const formTeamTourNumbers = specialTourModes
+    .map((mode, index) => (mode === 'team' ? index + 1 : null))
+    .filter((value): value is number => value !== null);
+  const registrationTeamTourNumbers = regCompetition
+    ? extractToursFromSettings(regCompetition)
+      .filter((tour) => tour.mode === 'team')
+      .map((tour) => tour.tourNumber)
+    : [];
+
+  useEffect(() => {
+    if (!isSpecialCompetition) {
+      setSpecialTourModes([]);
+      setSpecialTourTasks([]);
+      setSpecialSeatMatrixColumns(3);
+      setSpecialCaptainsRoomId('');
+      setSpecialRoomLayouts({});
+      return;
+    }
+    const count = Number(specialToursCount || 0);
+    if (!count || count < 1) {
+      setSpecialTourModes([]);
+      setSpecialTourTasks([]);
+      return;
+    }
+    setSpecialTourModes((prev) => {
+      const next = Array.from({ length: count }, (_, idx) => prev[idx] || 'individual');
+      return next;
+    });
+    setSpecialTourTasks((prev) => {
+      const next = Array.from({ length: count }, (_, idx) => prev[idx] || '1');
+      return next;
+    });
+  }, [isSpecialCompetition, specialToursCount]);
 
   useEffect(() => {
     loadCompetitions();
@@ -75,13 +137,102 @@ const CompetitionsAdminPage: React.FC = () => {
     setRoomsLoading(true);
     try {
       const { data } = await api.get<{ rooms: Room[] }>(`rooms/${competitionId}`);
-      setExistingRooms(data.rooms || []);
+      const rooms = data.rooms || [];
+      setExistingRooms(rooms);
+      setSpecialRoomLayouts((prev) => {
+        const next: RoomLayoutState = {};
+        rooms.forEach((room) => {
+          const current = prev[room.id];
+          next[room.id] = {
+            seatsPerTable: parsePositiveInt(current?.seatsPerTable, 1),
+            teamSeatsPerTable: parsePositiveInt(current?.teamSeatsPerTable, 2),
+          };
+        });
+        return next;
+      });
     } catch {
       setExistingRooms([]);
+      setSpecialRoomLayouts({});
     } finally {
       setRoomsLoading(false);
     }
   };
+
+  const parseTaskNumbersInput = (value: string): number[] => {
+    const parsed = value
+      .split(',')
+      .map((token) => Number(token.trim()))
+      .filter((token) => Number.isInteger(token) && token > 0);
+    const unique = Array.from(new Set(parsed));
+    return unique.length ? unique : [1];
+  };
+
+  function parsePositiveInt(value: unknown, fallback: number): number {
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+  }
+
+  function extractToursFromSettings(comp: Competition): Array<{ tourNumber: number; mode: string; taskNumbers: number[] }> {
+    const settings = comp.special_settings;
+    if (!settings || typeof settings !== 'object') return [];
+
+    const rawTours = (settings as { tours?: unknown }).tours;
+    if (!Array.isArray(rawTours)) return [];
+
+    return rawTours
+      .map((item, index) => {
+        if (!item || typeof item !== 'object') return null;
+        const rawMode = (item as { mode?: unknown }).mode;
+        const rawTaskNumbers = (item as { task_numbers?: unknown; tasks?: unknown }).task_numbers
+          ?? (item as { task_numbers?: unknown; tasks?: unknown }).tasks;
+        const mode = typeof rawMode === 'string' ? rawMode : 'individual';
+        const taskNumbers = Array.isArray(rawTaskNumbers)
+          ? rawTaskNumbers
+            .map((n) => Number(n))
+            .filter((n) => Number.isInteger(n) && n > 0)
+          : [1];
+        const rawTourNumber = (item as { tour_number?: unknown }).tour_number;
+        return {
+          tourNumber: parsePositiveInt(rawTourNumber, index + 1),
+          mode,
+          taskNumbers: taskNumbers.length ? Array.from(new Set(taskNumbers)) : [1],
+        };
+      })
+      .filter((item): item is { tourNumber: number; mode: string; taskNumbers: number[] } => item !== null);
+  }
+
+  function extractRoomLayoutsFromSettings(comp: Competition): RoomLayoutState {
+    const settings = comp.special_settings;
+    if (!settings || typeof settings !== 'object') return {};
+
+    const rawRoomLayouts = (settings as { room_layouts?: unknown }).room_layouts;
+    const rawTeamRoomLayouts = (settings as { team_room_layouts?: unknown }).team_room_layouts;
+
+    const parsed: RoomLayoutState = {};
+    if (rawRoomLayouts && typeof rawRoomLayouts === 'object') {
+      Object.entries(rawRoomLayouts as Record<string, unknown>).forEach(([roomId, payload]) => {
+        if (!payload || typeof payload !== 'object') return;
+        const seatsPerTable = parsePositiveInt((payload as { seats_per_table?: unknown }).seats_per_table, 1);
+        parsed[roomId] = {
+          seatsPerTable,
+          teamSeatsPerTable: 2,
+        };
+      });
+    }
+
+    if (rawTeamRoomLayouts && typeof rawTeamRoomLayouts === 'object') {
+      Object.entries(rawTeamRoomLayouts as Record<string, unknown>).forEach(([roomId, payload]) => {
+        if (!payload || typeof payload !== 'object') return;
+        const teamSeatsPerTable = parsePositiveInt((payload as { seats_per_table?: unknown }).seats_per_table, 2);
+        parsed[roomId] = {
+          seatsPerTable: parsed[roomId]?.seatsPerTable ?? 1,
+          teamSeatsPerTable,
+        };
+      });
+    }
+
+    return parsed;
+  }
 
   const openCreate = () => {
     setEditingId(null);
@@ -92,15 +243,39 @@ const CompetitionsAdminPage: React.FC = () => {
       registration_end: '',
       variants_count: 4,
       max_score: 100,
+      is_special: false,
+      special_tours_count: undefined,
     });
     setPendingRooms([]);
     setExistingRooms([]);
     setNewRoomName('');
     setNewRoomCapacity(30);
+    setSpecialTourModes([]);
+    setSpecialTourTasks([]);
+    setSpecialSeatMatrixColumns(3);
+    setSpecialCaptainsRoomId('');
+    setSpecialRoomLayouts({});
+    setTeamTourForPrint(null);
+    setImportFile(null);
+    setAnswerTemplateFile(null);
+    setA3TemplateFile(null);
     setModalOpen(true);
   };
 
   const openEdit = (comp: Competition) => {
+    const toursFromSettings = extractToursFromSettings(comp);
+    const toursCountFromSettings = toursFromSettings.length > 0 ? toursFromSettings.length : null;
+    const effectiveToursCount = comp.special_tours_count ?? toursCountFromSettings ?? undefined;
+    const fallbackModes = comp.special_tour_modes || [];
+    const effectiveTourCount = Number(effectiveToursCount || fallbackModes.length || 0);
+    const settings = (comp.special_settings && typeof comp.special_settings === 'object')
+      ? (comp.special_settings as Record<string, unknown>)
+      : {};
+    const rawSeatColumns = settings.seat_matrix_columns;
+    const parsedSeatColumns = Number(rawSeatColumns);
+    const rawCaptainsRoomId = settings.captains_room_id;
+    const parsedRoomLayouts = extractRoomLayoutsFromSettings(comp);
+
     setEditingId(comp.id);
     setValue('name', comp.name);
     setValue('date', comp.date.slice(0, 10));
@@ -108,6 +283,28 @@ const CompetitionsAdminPage: React.FC = () => {
     setValue('registration_end', comp.registration_end.slice(0, 16));
     setValue('variants_count', comp.variants_count);
     setValue('max_score', comp.max_score);
+    setValue('is_special', comp.is_special);
+    setValue('special_tours_count', effectiveToursCount);
+    setSpecialTourModes(
+      Array.from({ length: effectiveTourCount }, (_, index) => {
+        if (toursFromSettings[index]?.mode) return toursFromSettings[index].mode;
+        if (fallbackModes[index]) return fallbackModes[index];
+        return 'individual';
+      })
+    );
+    setSpecialTourTasks(
+      Array.from({ length: effectiveTourCount }, (_, index) => {
+        const taskNumbers = toursFromSettings[index]?.taskNumbers || [1];
+        return taskNumbers.join(', ');
+      })
+    );
+    setSpecialSeatMatrixColumns(Number.isInteger(parsedSeatColumns) && parsedSeatColumns > 0 ? parsedSeatColumns : 3);
+    setSpecialCaptainsRoomId(typeof rawCaptainsRoomId === 'string' ? rawCaptainsRoomId : '');
+    setSpecialRoomLayouts(parsedRoomLayouts);
+    setTeamTourForPrint(null);
+    setImportFile(null);
+    setAnswerTemplateFile(null);
+    setA3TemplateFile(null);
     setPendingRooms([]);
     setNewRoomName('');
     setNewRoomCapacity(30);
@@ -156,20 +353,76 @@ const CompetitionsAdminPage: React.FC = () => {
     if (!editingId) return;
     try {
       await api.delete(`rooms/room/${roomId}`);
+      if (specialCaptainsRoomId === roomId) {
+        setSpecialCaptainsRoomId('');
+      }
+      setSpecialRoomLayouts((prev) => {
+        const next = { ...prev };
+        delete next[roomId];
+        return next;
+      });
       await loadRooms(editingId);
     } catch {
       setError('Не удалось удалить аудиторию.');
     }
   };
 
+  const updateRoomLayout = (roomId: string, field: 'seatsPerTable' | 'teamSeatsPerTable', value: number) => {
+    setSpecialRoomLayouts((prev) => ({
+      ...prev,
+      [roomId]: {
+        seatsPerTable: parsePositiveInt(prev[roomId]?.seatsPerTable, 1),
+        teamSeatsPerTable: parsePositiveInt(prev[roomId]?.teamSeatsPerTable, 2),
+        [field]: parsePositiveInt(value, field === 'seatsPerTable' ? 1 : 2),
+      },
+    }));
+  };
+
   const onSubmit = async (data: CompetitionForm) => {
     setSaving(true);
     setError(null);
     try {
+      const tours = specialTourModes.map((mode, index) => ({
+        tour_number: index + 1,
+        mode,
+        task_numbers: parseTaskNumbersInput(specialTourTasks[index] || '1'),
+      }));
+      const normalizedRoomLayouts = Object.fromEntries(
+        Object.entries(specialRoomLayouts).map(([roomId, layout]) => [
+          roomId,
+          { seats_per_table: parsePositiveInt(layout.seatsPerTable, 1) },
+        ])
+      );
+      const normalizedTeamRoomLayouts = Object.fromEntries(
+        Object.entries(specialRoomLayouts).map(([roomId, layout]) => [
+          roomId,
+          { seats_per_table: parsePositiveInt(layout.teamSeatsPerTable, 2) },
+        ])
+      );
+
+      const payload = {
+        ...data,
+        special_tour_modes: data.is_special ? specialTourModes : null,
+        special_settings: data.is_special
+          ? {
+              import_supported_formats: ['json', 'csv', 'xlsx'],
+              archive_mode: 'participant_folders',
+              templates_format: 'word_docx',
+              seat_matrix_columns: Math.max(1, Number(specialSeatMatrixColumns || 3)),
+              captains_room_id: hasIndividualCaptainsMode && specialCaptainsRoomId ? specialCaptainsRoomId : null,
+              default_seats_per_table: 1,
+              team_default_seats_per_table: 2,
+              room_layouts: normalizedRoomLayouts,
+              team_room_layouts: normalizedTeamRoomLayouts,
+              tours,
+            }
+          : null,
+      };
+
       if (editingId) {
-        await api.put(`competitions/${editingId}`, data);
+        await api.put(`competitions/${editingId}`, payload);
       } else {
-        const { data: newComp } = await api.post('competitions', data);
+        const { data: newComp } = await api.post('competitions', payload);
         // Create rooms for the new competition
         for (const room of pendingRooms) {
           await api.post(`rooms/${newComp.id}`, { name: room.name, capacity: room.capacity });
@@ -180,6 +433,15 @@ const CompetitionsAdminPage: React.FC = () => {
       setEditingId(null);
       setPendingRooms([]);
       setExistingRooms([]);
+      setSpecialTourModes([]);
+      setSpecialTourTasks([]);
+      setSpecialSeatMatrixColumns(3);
+      setSpecialCaptainsRoomId('');
+      setSpecialRoomLayouts({});
+      setTeamTourForPrint(null);
+      setImportFile(null);
+      setAnswerTemplateFile(null);
+      setA3TemplateFile(null);
       await loadCompetitions();
     } catch (err: unknown) {
       const message =
@@ -201,14 +463,22 @@ const CompetitionsAdminPage: React.FC = () => {
   };
 
   const openRegModal = async (comp: Competition) => {
+    const teamTours = extractToursFromSettings(comp)
+      .filter((tour) => tour.mode === 'team')
+      .map((tour) => tour.tourNumber);
+
     setRegCompetition(comp);
+    setTeamTourForPrint(teamTours.length > 0 ? teamTours[0] : null);
     setRegModalOpen(true);
     setRegLoading(true);
     setParticipantSearch('');
+    setImportFile(null);
+    setAnswerTemplateFile(null);
+    setA3TemplateFile(null);
     try {
       const [regRes, participantsRes] = await Promise.all([
         api.get<{ items: AdminRegistrationItem[]; total: number }>(`admin/registrations/${comp.id}`),
-        api.get<{ participants: { id: string; user_id: string; full_name: string; school: string }[] }>('admin/participants'),
+        api.get<{ participants: { id: string; user_id: string; full_name: string; school: string; institution_location?: string; is_captain?: boolean }[] }>('admin/participants'),
       ]);
       setRegItems(regRes.data.items || []);
       setParticipants(participantsRes.data.participants || []);
@@ -249,9 +519,179 @@ const CompetitionsAdminPage: React.FC = () => {
     }
   };
 
-  const handleDownloadBadges = () => {
+  const openAuthorizedPrintPage = async (endpoint: string) => {
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      setError('Браузер заблокировал всплывающее окно. Разрешите pop-up для печати.');
+      return;
+    }
+
+    printWindow.document.write('<html><body style="font-family: sans-serif; padding: 16px;">Загрузка...</body></html>');
+    printWindow.document.close();
+
+    try {
+      const response = await api.get<string>(endpoint, {
+        responseType: 'text',
+        headers: { Accept: 'text/html' },
+      });
+      printWindow.document.open();
+      printWindow.document.write(response.data);
+      printWindow.document.close();
+    } catch (err: unknown) {
+      printWindow.close();
+      const message =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Не удалось открыть страницу печати.';
+      setError(message);
+    }
+  };
+
+  const handleDownloadBadges = async () => {
     if (!regCompetition) return;
-    window.open(`/api/v1/admin/registrations/${regCompetition.id}/badges-pdf`, '_blank');
+    setError(null);
+    try {
+      const response = await api.get(`admin/registrations/${regCompetition.id}/badges-pdf`, {
+        responseType: 'blob',
+      });
+      const blob = new Blob([response.data], { type: 'application/pdf' });
+      downloadBlob(blob, `badges_${regCompetition.id}.pdf`);
+    } catch (err: unknown) {
+      const message =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Не удалось скачать бейджи PDF.';
+      setError(message);
+    }
+  };
+
+  const handleOpenSeatingPlanPrint = async () => {
+    if (!regCompetition) return;
+    setError(null);
+    await openAuthorizedPrintPage(`admin/competitions/${regCompetition.id}/seating-plan/print`);
+  };
+
+  const handleOpenTeamSeatingPlanPrint = async () => {
+    if (!regCompetition || !teamTourForPrint) return;
+    setError(null);
+    const query = new URLSearchParams({ tour_number: String(teamTourForPrint) }).toString();
+    await openAuthorizedPrintPage(`admin/competitions/${regCompetition.id}/seating-plan/print?${query}`);
+  };
+
+  const handleImportParticipants = async () => {
+    if (!regCompetition || !importFile) return;
+    setImporting(true);
+    setError(null);
+    try {
+      const form = new FormData();
+      form.append('file', importFile);
+      const { data } = await api.post(
+        `admin/competitions/${regCompetition.id}/special/import-participants?register_to_competition=true`,
+        form,
+        { headers: { 'Content-Type': 'multipart/form-data' } }
+      );
+
+      const regRes = await api.get<{ items: AdminRegistrationItem[]; total: number }>(
+        `admin/registrations/${regCompetition.id}`
+      );
+      setRegItems(regRes.data.items || []);
+      setImportFile(null);
+
+      const imported = data?.registered_to_competition ?? 0;
+      const errorsCount = Array.isArray(data?.errors) ? data.errors.length : 0;
+      setError(null);
+      alert(`Импорт завершен: зарегистрировано ${imported}, ошибок ${errorsCount}.`);
+    } catch (err: unknown) {
+      const message =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Не удалось импортировать участников.';
+      setError(message);
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const handleAdmitAllAndDownload = async () => {
+    if (!regCompetition) return;
+    setAdmitAndDownloadLoading(true);
+    setError(null);
+    try {
+      const response = await api.post(
+        `admin/competitions/${regCompetition.id}/special/admit-all-and-download`,
+        {},
+        { responseType: 'blob' }
+      );
+      const blob = new Blob([response.data], { type: 'application/zip' });
+      downloadBlob(blob, `special_olympiad_${regCompetition.id}.zip`);
+
+      const regRes = await api.get<{ items: AdminRegistrationItem[]; total: number }>(
+        `admin/registrations/${regCompetition.id}`
+      );
+      setRegItems(regRes.data.items || []);
+    } catch (err: unknown) {
+      const message =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Не удалось допустить участников и скачать архив.';
+      setError(message);
+    } finally {
+      setAdmitAndDownloadLoading(false);
+    }
+  };
+
+  const downloadBlob = (blob: Blob, filename: string) => {
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadTemplate = async (kind: SpecialTemplateKind) => {
+    setTemplateDownloadingKind(kind);
+    setError(null);
+    try {
+      const response = await api.get(`admin/special/templates/${kind}/download`, {
+        responseType: 'blob',
+      });
+      const fallbackName = kind === 'answer_blank'
+        ? 'special_answer_blank_template.docx'
+        : 'special_cover_a3_template.docx';
+      downloadBlob(new Blob([response.data]), fallbackName);
+    } catch (err: unknown) {
+      const message =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Не удалось скачать шаблон.';
+      setError(message);
+    } finally {
+      setTemplateDownloadingKind(null);
+    }
+  };
+
+  const handleUploadTemplate = async (kind: SpecialTemplateKind, file: File | null) => {
+    if (!file) return;
+    setTemplateUploadingKind(kind);
+    setError(null);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      await api.post(`admin/special/templates/${kind}/upload`, form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      if (kind === 'answer_blank') {
+        setAnswerTemplateFile(null);
+      } else {
+        setA3TemplateFile(null);
+      }
+      alert('Шаблон успешно обновлен.');
+    } catch (err: unknown) {
+      const message =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Не удалось загрузить шаблон.';
+      setError(message);
+    } finally {
+      setTemplateUploadingKind(null);
+    }
   };
 
   const getRegStatusLabel = (status: string): string => {
@@ -269,7 +709,11 @@ const CompetitionsAdminPage: React.FC = () => {
     if (regItems.some((r) => r.participant_id === p.id)) return false;
     if (!participantSearch) return true;
     const search = participantSearch.toLowerCase();
-    return p.full_name.toLowerCase().includes(search) || p.school.toLowerCase().includes(search);
+    return (
+      p.full_name.toLowerCase().includes(search) ||
+      p.school.toLowerCase().includes(search) ||
+      (p.institution_location || '').toLowerCase().includes(search)
+    );
   });
 
   const getStatusLabel = (status: string): string => {
@@ -316,6 +760,7 @@ const CompetitionsAdminPage: React.FC = () => {
             <th>Название</th>
             <th>Дата</th>
             <th>Статус</th>
+            <th>Тип</th>
             <th>Варианты</th>
             <th>Макс. балл</th>
             <th>Действия</th>
@@ -324,7 +769,7 @@ const CompetitionsAdminPage: React.FC = () => {
         <tbody>
           {competitions.length === 0 ? (
             <tr>
-              <td colSpan={6} className="text-center text-muted">
+              <td colSpan={7} className="text-center text-muted">
                 Олимпиад пока нет.
               </td>
             </tr>
@@ -334,6 +779,7 @@ const CompetitionsAdminPage: React.FC = () => {
                 <td>{comp.name}</td>
                 <td>{new Date(comp.date).toLocaleDateString('ru-RU')}</td>
                 <td>{getStatusLabel(comp.status)}</td>
+                <td>{comp.is_special ? `Особая${comp.special_tours_count ? ` (${comp.special_tours_count} тур.)` : ''}` : 'Обычная'}</td>
                 <td>{comp.variants_count}</td>
                 <td>{comp.max_score}</td>
                 <td>
@@ -403,6 +849,15 @@ const CompetitionsAdminPage: React.FC = () => {
           setEditingId(null);
           setPendingRooms([]);
           setExistingRooms([]);
+          setSpecialTourModes([]);
+          setSpecialTourTasks([]);
+          setSpecialSeatMatrixColumns(3);
+          setSpecialCaptainsRoomId('');
+          setSpecialRoomLayouts({});
+          setTeamTourForPrint(null);
+          setImportFile(null);
+          setAnswerTemplateFile(null);
+          setA3TemplateFile(null);
         }}
         title={editingId ? 'Редактировать олимпиаду' : 'Создать олимпиаду'}
       >
@@ -444,6 +899,90 @@ const CompetitionsAdminPage: React.FC = () => {
             error={errors.max_score?.message}
             {...register('max_score')}
           />
+          <div className="form-group">
+            <label className="label" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input type="checkbox" {...register('is_special')} />
+              Особая олимпиада
+            </label>
+          </div>
+          {isSpecialCompetition && (
+            <>
+              <Input
+                label="Количество туров"
+                type="number"
+                min={1}
+                error={errors.special_tours_count?.message}
+                {...register('special_tours_count')}
+              />
+              {specialTourModes.length > 0 && (
+                <div className="form-group">
+                  <label className="label">Режим каждого тура</label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {specialTourModes.map((mode, index) => (
+                      <div
+                        key={`tour-mode-${index}`}
+                        style={{ display: 'grid', gridTemplateColumns: '120px 1fr 1fr', gap: 8, alignItems: 'center' }}
+                      >
+                        <span className="text-muted">Тур {index + 1}</span>
+                        <select
+                          className="input"
+                          value={mode}
+                          onChange={(e) =>
+                            setSpecialTourModes((prev) => prev.map((m, i) => (i === index ? e.target.value : m)))
+                          }
+                        >
+                          <option value="individual">Индивидуальный</option>
+                          <option value="individual_captains">Индивидуальный (капитаны)</option>
+                          <option value="team">Командный</option>
+                        </select>
+                        <Input
+                          label=""
+                          placeholder="Задания: 1,2,3"
+                          value={specialTourTasks[index] || ""}
+                          onChange={(e) =>
+                            setSpecialTourTasks((prev) => prev.map((tasks, i) => (i === index ? e.target.value : tasks)))
+                          }
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-muted" style={{ marginTop: 8, fontSize: 12 }}>
+                    Для каждого тура укажите номера заданий через запятую, например: 1,2,3.
+                  </p>
+                </div>
+              )}
+              <Input
+                label="Колонок в сетке рассадки"
+                type="number"
+                min={1}
+                value={specialSeatMatrixColumns}
+                onChange={(e) => setSpecialSeatMatrixColumns(Math.max(1, Number(e.target.value || 1)))}
+              />
+              {hasIndividualCaptainsMode && (
+                <div className="form-group">
+                  <label className="label">Аудитория капитанов (для режима «индивидуальный, капитаны»)</label>
+                  {editingId ? (
+                    <select
+                      className="input"
+                      value={specialCaptainsRoomId}
+                      onChange={(e) => setSpecialCaptainsRoomId(e.target.value)}
+                    >
+                      <option value="">Не выбрано</option>
+                      {existingRooms.map((room) => (
+                        <option key={room.id} value={room.id}>
+                          {room.name} ({room.capacity} мест)
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <p className="text-muted" style={{ marginTop: 4, fontSize: 12 }}>
+                      Настройте аудиторию капитанов после сохранения олимпиады и добавления аудиторий.
+                    </p>
+                  )}
+                </div>
+              )}
+            </>
+          )}
 
           {/* Rooms section */}
           <div style={{ marginTop: 16, marginBottom: 16 }}>
@@ -532,6 +1071,55 @@ const CompetitionsAdminPage: React.FC = () => {
             )}
           </div>
 
+          {isSpecialCompetition && editingId && existingRooms.length > 0 && (
+            <div style={{ marginBottom: 16, padding: 12, border: '1px solid var(--glass-border, #e2e8f0)', borderRadius: 8 }}>
+              <h3 style={{ marginBottom: 8 }}>Конструктор рассадки по столам</h3>
+              <p className="text-muted" style={{ marginBottom: 10, fontSize: 12 }}>
+                Настройка применяется в схеме рассадки и печати. Для командного тура можно задать отдельную плотность мест.
+              </p>
+              {formTeamTourNumbers.length > 0 && (
+                <p className="text-muted" style={{ marginBottom: 10, fontSize: 12 }}>
+                  Командные туры: {formTeamTourNumbers.join(', ')}.
+                </p>
+              )}
+              <div style={{ display: 'grid', gap: 8 }}>
+                {existingRooms.map((room) => {
+                  const layout = specialRoomLayouts[room.id] || { seatsPerTable: 1, teamSeatsPerTable: 2 };
+                  return (
+                    <div
+                      key={`layout-${room.id}`}
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: '1.2fr 1fr 1fr',
+                        gap: 8,
+                        alignItems: 'end',
+                      }}
+                    >
+                      <div>
+                        <div style={{ fontWeight: 600 }}>{room.name}</div>
+                        <div className="text-muted" style={{ fontSize: 12 }}>{room.capacity} мест</div>
+                      </div>
+                      <Input
+                        label="Мест за столом"
+                        type="number"
+                        min={1}
+                        value={layout.seatsPerTable}
+                        onChange={(e) => updateRoomLayout(room.id, 'seatsPerTable', Number(e.target.value || 1))}
+                      />
+                      <Input
+                        label="Командный режим"
+                        type="number"
+                        min={1}
+                        value={layout.teamSeatsPerTable}
+                        onChange={(e) => updateRoomLayout(room.id, 'teamSeatsPerTable', Number(e.target.value || 2))}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <Button type="submit" loading={saving} style={{ width: '100%' }}>
             {editingId ? 'Сохранить' : 'Создать'}
           </Button>
@@ -547,6 +1135,10 @@ const CompetitionsAdminPage: React.FC = () => {
           setRegItems([]);
           setParticipants([]);
           setParticipantSearch('');
+          setTeamTourForPrint(null);
+          setImportFile(null);
+          setAnswerTemplateFile(null);
+          setA3TemplateFile(null);
         }}
         title={`Регистрации — ${regCompetition?.name || ''}`}
       >
@@ -556,10 +1148,128 @@ const CompetitionsAdminPage: React.FC = () => {
           <div>
             {/* Download badges button */}
             {regItems.length > 0 && (
-              <div style={{ marginBottom: 16 }}>
+              <div style={{ marginBottom: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <Button variant="secondary" onClick={handleDownloadBadges}>
                   Скачать бейджи PDF
                 </Button>
+                <Button variant="secondary" onClick={handleOpenSeatingPlanPrint}>
+                  Рассадка / печать
+                </Button>
+                {registrationTeamTourNumbers.length > 0 && (
+                  <>
+                    <select
+                      className="input"
+                      value={teamTourForPrint ?? registrationTeamTourNumbers[0]}
+                      onChange={(e) => setTeamTourForPrint(Number(e.target.value))}
+                      style={{ width: 180 }}
+                    >
+                      {registrationTeamTourNumbers.map((tourNumber) => (
+                        <option key={`team-tour-${tourNumber}`} value={tourNumber}>
+                          Командный тур {tourNumber}
+                        </option>
+                      ))}
+                    </select>
+                    <Button
+                      variant="secondary"
+                      onClick={handleOpenTeamSeatingPlanPrint}
+                      disabled={!teamTourForPrint}
+                    >
+                      Печать командной схемы
+                    </Button>
+                  </>
+                )}
+              </div>
+            )}
+
+            {regCompetition?.is_special && (
+              <div style={{ marginBottom: 16, padding: 12, border: '1px solid var(--glass-border, #e2e8f0)', borderRadius: 8 }}>
+                <h3 style={{ marginBottom: 8 }}>Особая олимпиада</h3>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                  <input
+                    type="file"
+                    accept=".json,.csv,.xlsx"
+                    onChange={(e) => setImportFile(e.target.files?.[0] || null)}
+                    style={{ flex: 1, minWidth: 180 }}
+                  />
+                  <Button
+                    variant="secondary"
+                    onClick={handleImportParticipants}
+                    loading={importing}
+                    disabled={!importFile}
+                  >
+                    Импорт участников
+                  </Button>
+                  <Button
+                    onClick={handleAdmitAllAndDownload}
+                    loading={admitAndDownloadLoading}
+                  >
+                    Допустить всех + ZIP
+                  </Button>
+                </div>
+                <p className="text-muted" style={{ fontSize: 12, marginBottom: 12 }}>
+                  Форматы импорта: JSON/CSV/XLSX. Архив включает DOCX-бланки, A3-обложки и legacy PDF.
+                </p>
+
+                <div style={{ borderTop: '1px solid var(--glass-border, #e2e8f0)', paddingTop: 12 }}>
+                  <h4 style={{ marginBottom: 8 }}>Word-шаблоны бланков</h4>
+                  <p className="text-muted" style={{ fontSize: 12, marginBottom: 8 }}>
+                    Токены: {'{{QR_IMAGE}}'}, {'{{TOUR_NUMBER}}'}, {'{{TASK_NUMBER}}'}, {'{{TOUR_MODE}}'}, {'{{TOUR_TASK}}'}.
+                  </p>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12 }}>
+                    <div>
+                      <label className="label" style={{ marginBottom: 4, display: 'block' }}>Шаблон бланка задания</label>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <input
+                          type="file"
+                          accept=".docx"
+                          onChange={(e) => setAnswerTemplateFile(e.target.files?.[0] || null)}
+                          style={{ flex: 1, minWidth: 200 }}
+                        />
+                        <Button
+                          variant="secondary"
+                          onClick={() => handleDownloadTemplate('answer_blank')}
+                          loading={templateDownloadingKind === 'answer_blank'}
+                        >
+                          Скачать
+                        </Button>
+                        <Button
+                          onClick={() => handleUploadTemplate('answer_blank', answerTemplateFile)}
+                          loading={templateUploadingKind === 'answer_blank'}
+                          disabled={!answerTemplateFile}
+                        >
+                          Загрузить
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="label" style={{ marginBottom: 4, display: 'block' }}>Шаблон A3-обложки</label>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <input
+                          type="file"
+                          accept=".docx"
+                          onChange={(e) => setA3TemplateFile(e.target.files?.[0] || null)}
+                          style={{ flex: 1, minWidth: 200 }}
+                        />
+                        <Button
+                          variant="secondary"
+                          onClick={() => handleDownloadTemplate('a3_cover')}
+                          loading={templateDownloadingKind === 'a3_cover'}
+                        >
+                          Скачать
+                        </Button>
+                        <Button
+                          onClick={() => handleUploadTemplate('a3_cover', a3TemplateFile)}
+                          loading={templateUploadingKind === 'a3_cover'}
+                          disabled={!a3TemplateFile}
+                        >
+                          Загрузить
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
 
@@ -571,6 +1281,8 @@ const CompetitionsAdminPage: React.FC = () => {
                     <tr>
                       <th>ФИО</th>
                       <th>Школа</th>
+                      <th>Город/филиал</th>
+                      <th>Капитан</th>
                       <th>Учреждение</th>
                       <th>Статус</th>
                     </tr>
@@ -580,6 +1292,8 @@ const CompetitionsAdminPage: React.FC = () => {
                       <tr key={item.registration_id}>
                         <td>{item.participant_name}</td>
                         <td>{item.participant_school}</td>
+                        <td>{item.participant_institution_location || '—'}</td>
+                        <td>{item.participant_is_captain ? 'Да' : 'Нет'}</td>
                         <td>{item.institution_name || '—'}</td>
                         <td>{getRegStatusLabel(item.status)}</td>
                       </tr>
@@ -646,3 +1360,4 @@ const CompetitionsAdminPage: React.FC = () => {
 };
 
 export default CompetitionsAdminPage;
+

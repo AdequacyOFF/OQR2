@@ -25,6 +25,8 @@ class ParticipantRepositoryImpl(ParticipantRepository):
             school=entity.school,
             grade=entity.grade,
             institution_id=entity.institution_id,
+            institution_location=entity.institution_location,
+            is_captain=entity.is_captain,
             dob=entity.dob,
             created_at=entity.created_at,
             updated_at=entity.updated_at
@@ -67,6 +69,8 @@ class ParticipantRepositoryImpl(ParticipantRepository):
         model.school = entity.school
         model.grade = entity.grade
         model.institution_id = entity.institution_id
+        model.institution_location = entity.institution_location
+        model.is_captain = entity.is_captain
         model.dob = entity.dob
         model.updated_at = entity.updated_at
 
@@ -105,6 +109,8 @@ class ParticipantRepositoryImpl(ParticipantRepository):
             school=model.school,
             grade=model.grade,
             institution_id=model.institution_id,
+            institution_location=model.institution_location,
+            is_captain=model.is_captain,
             dob=model.dob,
             created_at=model.created_at,
             updated_at=model.updated_at

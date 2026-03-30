@@ -17,6 +17,13 @@ class CreateCompetitionRequest(BaseModel):
     registration_end: dt.datetime = Field(..., description="Registration end datetime")
     variants_count: int = Field(..., ge=1, description="Number of test variants")
     max_score: int = Field(..., ge=1, description="Maximum possible score")
+    is_special: bool = Field(False, description="Special olympiad mode")
+    special_tours_count: int | None = Field(None, ge=1, description="Number of tours for special olympiad")
+    special_tour_modes: list[str] | None = Field(
+        None,
+        description="Tour modes list. Allowed: individual, individual_captains, team",
+    )
+    special_settings: dict | None = Field(None, description="Additional special olympiad settings")
 
     model_config = {
         "json_schema_extra": {
@@ -42,6 +49,13 @@ class UpdateCompetitionRequest(BaseModel):
     registration_end: dt.datetime | None = Field(None, description="Registration end datetime")
     variants_count: int | None = Field(None, ge=1, description="Number of test variants")
     max_score: int | None = Field(None, ge=1, description="Maximum possible score")
+    is_special: bool | None = Field(None, description="Special olympiad mode")
+    special_tours_count: int | None = Field(None, ge=1, description="Number of tours for special olympiad")
+    special_tour_modes: list[str] | None = Field(
+        None,
+        description="Tour modes list. Allowed: individual, individual_captains, team",
+    )
+    special_settings: dict | None = Field(None, description="Additional special olympiad settings")
 
     model_config = {
         "json_schema_extra": {
@@ -64,6 +78,10 @@ class CompetitionResponse(BaseModel):
     registration_end: dt.datetime
     variants_count: int
     max_score: int
+    is_special: bool
+    special_tours_count: int | None = None
+    special_tour_modes: list[str] | None = None
+    special_settings: dict | None = None
     status: CompetitionStatus
     created_by: UUID
     created_at: dt.datetime
@@ -80,6 +98,10 @@ class CompetitionResponse(BaseModel):
             registration_end=entity.registration_end,
             variants_count=entity.variants_count,
             max_score=entity.max_score,
+            is_special=entity.is_special,
+            special_tours_count=entity.special_tours_count,
+            special_tour_modes=entity.special_tour_modes,
+            special_settings=entity.special_settings,
             status=entity.status,
             created_by=entity.created_by,
             created_at=entity.created_at,

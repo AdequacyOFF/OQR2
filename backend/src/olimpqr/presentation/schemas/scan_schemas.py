@@ -16,6 +16,7 @@ class ScanResponse(BaseModel):
     """Full scan detail."""
     id: UUID
     attempt_id: Optional[UUID]
+    answer_sheet_id: Optional[UUID] = None
     file_path: str
     ocr_score: Optional[int]
     ocr_confidence: Optional[float]

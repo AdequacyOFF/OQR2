@@ -6,7 +6,7 @@ import uuid
 from datetime import date, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Date, DateTime, Enum as SQLEnum, ForeignKey, Integer, String
+from sqlalchemy import JSON, Boolean, Date, DateTime, Enum as SQLEnum, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from olimpqr.domain.value_objects.competition_status import CompetitionStatus
@@ -55,6 +55,25 @@ class CompetitionModel(Base):
     max_score: Mapped[int] = mapped_column(
         Integer,
         nullable=False
+    )
+    is_special: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+        index=True,
+    )
+    special_tours_count: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    special_tour_modes: Mapped[list[str] | None] = mapped_column(
+        JSON,
+        nullable=True,
+    )
+    special_settings: Mapped[dict | None] = mapped_column(
+        JSON,
+        nullable=True,
     )
     status: Mapped[CompetitionStatus] = mapped_column(
         SQLEnum(

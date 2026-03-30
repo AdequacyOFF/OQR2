@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     qr_token_size_bytes: int = Field(default=32, description="Token size in bytes (256 bits)")
     qr_error_correction: str = Field(default="H", description="QR error correction level (L, M, Q, H)")
     entry_token_expire_hours: int = Field(default=24, description="Entry token expiration in hours")
+    sheet_template_path: str = Field(
+        default="",
+        description="Optional JSON path for answer sheet template overrides",
+    )
 
     @field_validator("backend_cors_origins", mode="before")
     @classmethod

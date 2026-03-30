@@ -21,6 +21,7 @@ class ScanRepositoryImpl(ScanRepository):
         model = ScanModel(
             id=entity.id,
             attempt_id=entity.attempt_id,
+            answer_sheet_id=entity.answer_sheet_id,
             file_path=entity.file_path,
             ocr_score=entity.ocr_score,
             ocr_confidence=entity.ocr_confidence,
@@ -67,6 +68,7 @@ class ScanRepositoryImpl(ScanRepository):
         model.ocr_score = entity.ocr_score
         model.ocr_confidence = entity.ocr_confidence
         model.ocr_raw_text = entity.ocr_raw_text
+        model.answer_sheet_id = entity.answer_sheet_id
         model.verified_by = entity.verified_by
         model.updated_at = entity.updated_at
 
@@ -113,6 +115,7 @@ class ScanRepositoryImpl(ScanRepository):
         return Scan(
             id=model.id,
             attempt_id=model.attempt_id,
+            answer_sheet_id=model.answer_sheet_id,
             file_path=model.file_path,
             ocr_score=model.ocr_score,
             ocr_confidence=model.ocr_confidence,

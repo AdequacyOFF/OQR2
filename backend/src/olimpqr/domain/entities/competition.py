@@ -34,6 +34,10 @@ class Competition:
     max_score: int
     created_by: UUID
     id: UUID = field(default_factory=uuid4)
+    is_special: bool = False
+    special_tours_count: int | None = None
+    special_tour_modes: list[str] | None = None
+    special_settings: dict | None = None
     status: CompetitionStatus = CompetitionStatus.DRAFT
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
@@ -47,6 +51,97 @@ class Competition:
             raise ValueError("Должен быть хотя бы один вариант")
         if self.max_score < 1:
             raise ValueError("Максимальный балл должен быть положительным")
+        if self.is_special and self.special_tours_count is None:
+            raise ValueError("Для особой олимпиады нужно указать количество туров")
+        if self.special_tours_count is not None and self.special_tours_count < 1:
+            raise ValueError("Количество туров должно быть положительным")
+        if self.is_special and self.special_tour_modes is not None and self.special_tours_count is not None:
+            if len(self.special_tour_modes) != self.special_tours_count:
+                raise ValueError("Количество режимов туров должно совпадать с количеством туров")
+            allowed_modes = {"individual", "individual_captains", "team"}
+            invalid_modes = [mode for mode in self.special_tour_modes if mode not in allowed_modes]
+            if invalid_modes:
+                raise ValueError(
+                    f"Недопустимые режимы туров: {', '.join(invalid_modes)}. "
+                    f"Разрешены: {', '.join(sorted(allowed_modes))}"
+                )
+        if self.is_special and isinstance(self.special_settings, dict):
+            seat_matrix_columns = self.special_settings.get("seat_matrix_columns")
+            if seat_matrix_columns is not None:
+                try:
+                    parsed_columns = int(seat_matrix_columns)
+                except (TypeError, ValueError):
+                    raise ValueError("special_settings.seat_matrix_columns must be an integer")
+                if parsed_columns < 1:
+                    raise ValueError("special_settings.seat_matrix_columns must be >= 1")
+
+            captains_room_id = self.special_settings.get("captains_room_id")
+            if captains_room_id is not None:
+                try:
+                    UUID(str(captains_room_id))
+                except (TypeError, ValueError):
+                    raise ValueError("special_settings.captains_room_id must be a valid UUID")
+
+            for default_key in ("default_seats_per_table", "team_default_seats_per_table"):
+                raw_default = self.special_settings.get(default_key)
+                if raw_default is None:
+                    continue
+                try:
+                    parsed_default = int(raw_default)
+                except (TypeError, ValueError):
+                    raise ValueError(f"special_settings.{default_key} must be an integer")
+                if parsed_default < 1:
+                    raise ValueError(f"special_settings.{default_key} must be >= 1")
+
+            for layout_key in ("room_layouts", "team_room_layouts"):
+                raw_layouts = self.special_settings.get(layout_key)
+                if raw_layouts is None:
+                    continue
+                if not isinstance(raw_layouts, dict):
+                    raise ValueError(f"special_settings.{layout_key} must be an object")
+                for room_id, room_layout in raw_layouts.items():
+                    try:
+                        UUID(str(room_id))
+                    except (TypeError, ValueError):
+                        raise ValueError(f"special_settings.{layout_key} contains invalid room id: {room_id}")
+                    if not isinstance(room_layout, dict):
+                        raise ValueError(f"special_settings.{layout_key}.{room_id} must be an object")
+                    raw_seats_per_table = room_layout.get("seats_per_table")
+                    try:
+                        parsed_seats_per_table = int(raw_seats_per_table)
+                    except (TypeError, ValueError):
+                        raise ValueError(
+                            f"special_settings.{layout_key}.{room_id}.seats_per_table must be an integer"
+                        )
+                    if parsed_seats_per_table < 1:
+                        raise ValueError(
+                            f"special_settings.{layout_key}.{room_id}.seats_per_table must be >= 1"
+                        )
+
+            tours = self.special_settings.get("tours")
+            if tours is not None:
+                if not isinstance(tours, list):
+                    raise ValueError("special_settings.tours must be a list")
+                if self.special_tours_count is not None and len(tours) != self.special_tours_count:
+                    raise ValueError("special_settings.tours length must match special_tours_count")
+                allowed_modes = {"individual", "individual_captains", "team"}
+                for idx, tour in enumerate(tours, start=1):
+                    if not isinstance(tour, dict):
+                        raise ValueError(f"special_settings.tours[{idx}] must be an object")
+                    mode = str(tour.get("mode") or "")
+                    if mode not in allowed_modes:
+                        raise ValueError(
+                            f"special_settings.tours[{idx}].mode must be one of: individual, individual_captains, team"
+                        )
+                    raw_tasks = tour.get("task_numbers", [])
+                    if not isinstance(raw_tasks, list) or len(raw_tasks) == 0:
+                        raise ValueError(f"special_settings.tours[{idx}].task_numbers must contain at least one task")
+                    for task in raw_tasks:
+                        if not isinstance(task, int) or task < 1:
+                            raise ValueError(
+                                f"special_settings.tours[{idx}].task_numbers must contain only positive integers"
+                            )
+
 
     def open_registration(self):
         """Open registration for participants."""

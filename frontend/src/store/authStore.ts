@@ -14,6 +14,10 @@ interface AuthState {
     full_name: string;
     school?: string;
     grade?: number;
+    institution_id?: string;
+    institution_location?: string;
+    is_captain?: boolean;
+    dob?: string;
   }) => Promise<void>;
   logout: () => void;
   loadFromStorage: () => Promise<void>;

@@ -66,6 +66,23 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
 
     echo "Creating admin user..."
     ADMIN_EMAIL="$ADMIN_EMAIL" ADMIN_PASSWORD="$ADMIN_PASSWORD" docker-compose exec -T backend python scripts/init_admin.py
+    ADMIN_CREATE_EXIT=$?
+
+    if [ $ADMIN_CREATE_EXIT -ne 0 ]; then
+        echo ""
+        echo "======================================"
+        echo "  Admin Creation Failed"
+        echo "======================================"
+        echo "Possible reason:"
+        echo "  Database credentials mismatch in .env:"
+        echo "  POSTGRES_PASSWORD must match password in DATABASE_URL."
+        echo ""
+        echo "If DB password was changed after first start, old postgres volume may keep old credentials."
+        echo "Reset data (WARNING: removes local DB data):"
+        echo "  docker-compose down -v"
+        echo "  docker-compose up -d"
+        exit 1
+    fi
 
     echo ""
     echo "======================================"

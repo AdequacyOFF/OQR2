@@ -17,6 +17,8 @@ class RegisterUserDTO:
     school: str | None = None  # For participants
     grade: int | None = None  # For participants
     institution_id: UUID | None = None
+    institution_location: str | None = None
+    is_captain: bool = False
     dob: dt.date | None = None
 
 
