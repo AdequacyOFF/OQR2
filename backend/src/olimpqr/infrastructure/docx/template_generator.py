@@ -61,6 +61,7 @@ class WordTemplateGenerator:
         tour_number: int,
         task_number: int,
         mode: str,
+        tour_task: str | None = None,
     ) -> bytes:
         """Render answer blank DOCX from template."""
         self.ensure_templates_exist()
@@ -71,11 +72,12 @@ class WordTemplateGenerator:
                 "{{TOUR_NUMBER}}": str(tour_number),
                 "{{TASK_NUMBER}}": str(task_number),
                 "{{TOUR_MODE}}": mode,
-                "{{TOUR_TASK}}": f"{tour_number}/{task_number}",
+                "{{TOUR_TASK}}": tour_task or f"{tour_number}/{task_number}",
             },
         )
         qr_bytes = self._build_qr_png(qr_payload)
-        self._replace_qr_token(doc, "{{QR_IMAGE}}", qr_bytes, width_mm=35)
+        # QR in answer blank must not exceed 3 cm (30 mm) in width/height.
+        self._replace_qr_token(doc, "{{QR_IMAGE}}", qr_bytes, width_mm=28)
         return self._save_doc_to_bytes(doc)
 
     def generate_a3_cover(
@@ -95,7 +97,7 @@ class WordTemplateGenerator:
             },
         )
         qr_bytes = self._build_qr_png(qr_payload)
-        self._replace_qr_token(doc, "{{QR_IMAGE}}", qr_bytes, width_mm=45)
+        self._replace_qr_token(doc, "{{QR_IMAGE}}", qr_bytes, width_mm=28)
         return self._save_doc_to_bytes(doc)
 
     def _build_qr_png(self, payload: str) -> bytes:
@@ -294,4 +296,3 @@ class WordTemplateGenerator:
         right_cell.add_paragraph("Keep tokens: {{QR_IMAGE}}, {{TOUR_NUMBER}}, {{TOUR_MODE}}.")
 
         doc.save(str(path))
-

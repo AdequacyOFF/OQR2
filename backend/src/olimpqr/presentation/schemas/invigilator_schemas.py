@@ -34,6 +34,13 @@ class IssueExtraSheetResponse(BaseModel):
     pdf_url: str
 
 
+class IssueSpecialExtraSheetRequest(BaseModel):
+    """Request to issue special olympiad extra sheet as DOCX."""
+    attempt_id: UUID
+    tour_number: int = Field(..., ge=1)
+    task_number: int = Field(..., ge=1)
+
+
 class EventItem(BaseModel):
     """Single event item."""
     id: UUID
@@ -53,6 +60,13 @@ class ResolveSheetTokenRequest(BaseModel):
     sheet_token: str = Field(..., min_length=8)
 
 
+class SpecialTourOption(BaseModel):
+    """Tour config used by invigilator UI for special olympiad."""
+    tour_number: int
+    mode: str
+    task_numbers: list[int]
+
+
 class ResolveSheetTokenResponse(BaseModel):
     """Resolved context for a scanned sheet token."""
     attempt_id: UUID
@@ -60,6 +74,8 @@ class ResolveSheetTokenResponse(BaseModel):
     participant_name: str
     competition_id: UUID
     competition_name: str
+    is_special_competition: bool = False
+    special_tours: list["SpecialTourOption"] | None = None
 
 
 class AttemptSheetItem(BaseModel):

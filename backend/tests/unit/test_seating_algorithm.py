@@ -311,6 +311,83 @@ class TestSeatingAlgorithm:
         # Seat #5 is first seat on another table and should be preferred.
         assert result.seat_number == 5
 
+    async def test_special_mode_uses_room_specific_matrix_columns(self):
+        comp = self._make_competition(
+            is_special=True,
+            special_tour_modes=["individual"],
+            special_settings={
+                "seat_matrix_columns": 100,
+                "tours": [{"mode": "individual", "task_numbers": [1]}],
+            },
+        )
+        room = self._make_room(comp.id, capacity=6)
+        comp.special_settings["room_layouts"] = {
+            str(room.id): {"seats_per_table": 1, "seat_matrix_columns": 2},
+        }
+
+        inst_id = uuid4()
+        target_participant = self._make_participant(institution_id=inst_id, institution_location="Moscow")
+        target_registration = self._make_registration(target_participant.id, comp.id)
+
+        existing_same_participant = self._make_participant(institution_id=inst_id, institution_location="Moscow")
+        existing_same_registration = self._make_registration(existing_same_participant.id, comp.id)
+        existing_same_assignment = SeatAssignment(
+            registration_id=existing_same_registration.id,
+            room_id=room.id,
+            seat_number=1,
+            variant_number=1,
+        )
+
+        existing_other_participant = self._make_participant(institution_id=uuid4(), institution_location="SPB")
+        existing_other_registration = self._make_registration(existing_other_participant.id, comp.id)
+        existing_other_assignment = SeatAssignment(
+            registration_id=existing_other_registration.id,
+            room_id=room.id,
+            seat_number=2,
+            variant_number=2,
+        )
+
+        room_repo = AsyncMock()
+        room_repo.get_by_competition.return_value = [room]
+
+        seat_repo = AsyncMock()
+        seat_repo.get_by_registration.return_value = None
+        seat_repo.count_by_room.return_value = 2
+        seat_repo.get_by_room.return_value = [existing_same_assignment, existing_other_assignment]
+        seat_repo.create.return_value = None
+
+        reg_repo = AsyncMock()
+
+        async def reg_by_id(registration_id):
+            mapping = {
+                target_registration.id: target_registration,
+                existing_same_registration.id: existing_same_registration,
+                existing_other_registration.id: existing_other_registration,
+            }
+            return mapping.get(registration_id)
+
+        reg_repo.get_by_id.side_effect = reg_by_id
+
+        part_repo = AsyncMock()
+
+        async def part_by_id(participant_id):
+            mapping = {
+                target_participant.id: target_participant,
+                existing_same_participant.id: existing_same_participant,
+                existing_other_participant.id: existing_other_participant,
+            }
+            return mapping.get(participant_id)
+
+        part_repo.get_by_id.side_effect = part_by_id
+
+        uc = AssignSeatUseCase(room_repo, seat_repo, reg_repo, part_repo)
+        result = await uc.execute(target_registration.id, comp.id, variants_count=4, competition=comp)
+
+        # With room-specific seat_matrix_columns=2, seats 3 and 4 are still in local neighborhood with seat 1.
+        # First conflict-free seat is #5.
+        assert result is not None
+        assert result.seat_number == 5
+
     async def test_individual_captains_places_captain_in_captains_room(self):
         comp_id = uuid4()
         room_regular = self._make_room(comp_id, name="R1")

@@ -6,6 +6,7 @@ import json
 import re
 import secrets
 import zipfile
+from html import escape
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Optional
@@ -65,33 +66,33 @@ _IMPORT_HEADER_ALIASES = {
     "full_name": {
         "full_name",
         "fio",
-        "фио",
+        "С„РёРѕ",
         "name",
         "participant_name",
         "participant",
     },
-    "email": {"email", "почта", "e-mail", "mail"},
+    "email": {"email", "РїРѕС‡С‚Р°", "e-mail", "mail"},
     "institution": {
         "institution",
         "institution_name",
         "school",
         "university",
-        "вуз",
-        "учреждение",
-        "учебное учреждение",
+        "РІСѓР·",
+        "СѓС‡СЂРµР¶РґРµРЅРёРµ",
+        "СѓС‡РµР±РЅРѕРµ СѓС‡СЂРµР¶РґРµРЅРёРµ",
     },
     "institution_location": {
         "institution_location",
         "location",
         "city",
         "campus",
-        "местоположение",
-        "город",
-        "местоположение вуза",
-        "город вуза",
+        "РјРµСЃС‚РѕРїРѕР»РѕР¶РµРЅРёРµ",
+        "РіРѕСЂРѕРґ",
+        "РјРµСЃС‚РѕРїРѕР»РѕР¶РµРЅРёРµ РІСѓР·Р°",
+        "РіРѕСЂРѕРґ РІСѓР·Р°",
     },
-    "is_captain": {"is_captain", "captain", "капитан", "капитан/не капитан"},
-    "dob": {"dob", "birth_date", "date_of_birth", "дата рождения", "рождение"},
+    "is_captain": {"is_captain", "captain", "РєР°РїРёС‚Р°РЅ", "РєР°РїРёС‚Р°РЅ/РЅРµ РєР°РїРёС‚Р°РЅ"},
+    "dob": {"dob", "birth_date", "date_of_birth", "РґР°С‚Р° СЂРѕР¶РґРµРЅРёСЏ", "СЂРѕР¶РґРµРЅРёРµ"},
 }
 
 
@@ -116,7 +117,7 @@ def _parse_bool(value: Any) -> bool:
     if value is None:
         return False
     normalized = str(value).strip().lower()
-    return normalized in {"1", "true", "yes", "y", "да", "капитан"}
+    return normalized in {"1", "true", "yes", "y", "РґР°", "РєР°РїРёС‚Р°РЅ"}
 
 
 def _parse_dob(value: Any):
@@ -130,7 +131,7 @@ def _parse_dob(value: Any):
             return datetime.strptime(text, fmt).date()
         except ValueError:
             continue
-    raise ValueError(f"Не удалось распознать дату рождения: {value}")
+    raise ValueError(f"РќРµ СѓРґР°Р»РѕСЃСЊ СЂР°СЃРїРѕР·РЅР°С‚СЊ РґР°С‚Сѓ СЂРѕР¶РґРµРЅРёСЏ: {value}")
 
 
 def _slugify_folder_name(value: str) -> str:
@@ -147,7 +148,7 @@ def _parse_import_file(file_name: str, file_bytes: bytes) -> list[dict[str, Any]
         if isinstance(payload, dict):
             payload = payload.get("participants", [])
         if not isinstance(payload, list):
-            raise ValueError("JSON должен быть массивом участников или объектом с ключом participants")
+            raise ValueError("JSON РґРѕР»Р¶РµРЅ Р±С‹С‚СЊ РјР°СЃСЃРёРІРѕРј СѓС‡Р°СЃС‚РЅРёРєРѕРІ РёР»Рё РѕР±СЉРµРєС‚РѕРј СЃ РєР»СЋС‡РѕРј participants")
         return [_normalize_record(item) for item in payload if isinstance(item, dict)]
 
     if lower_name.endswith(".csv"):
@@ -159,7 +160,7 @@ def _parse_import_file(file_name: str, file_bytes: bytes) -> list[dict[str, Any]
             except UnicodeDecodeError:
                 continue
         if text is None:
-            raise ValueError("Не удалось декодировать CSV. Используйте UTF-8 или CP1251")
+            raise ValueError("Р СњР Вµ РЎС“Р Т‘Р В°Р В»Р С•РЎРѓРЎРЉ Р Т‘Р ВµР С”Р С•Р Т‘Р С‘РЎР‚Р С•Р Р†Р В°РЎвЂљРЎРЉ CSV. Р ВРЎРѓР С—Р С•Р В»РЎРЉР В·РЎС“Р в„–РЎвЂљР Вµ UTF-8 Р С‘Р В»Р С‘ CP1251")
 
         reader = csv.DictReader(io.StringIO(text))
         return [_normalize_record(row) for row in reader]
@@ -168,7 +169,7 @@ def _parse_import_file(file_name: str, file_bytes: bytes) -> list[dict[str, Any]
         try:
             from openpyxl import load_workbook
         except ImportError as exc:
-            raise ValueError("Для импорта XLSX требуется зависимость openpyxl") from exc
+            raise ValueError("Р”Р»СЏ РёРјРїРѕСЂС‚Р° XLSX С‚СЂРµР±СѓРµС‚СЃСЏ Р·Р°РІРёСЃРёРјРѕСЃС‚СЊ openpyxl") from exc
 
         wb = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
         ws = wb.active
@@ -184,7 +185,7 @@ def _parse_import_file(file_name: str, file_bytes: bytes) -> list[dict[str, Any]
             records.append(item)
         return records
 
-    raise ValueError("Поддерживаются только файлы .json, .csv, .xlsx")
+    raise ValueError("РџРѕРґРґРµСЂР¶РёРІР°СЋС‚СЃСЏ С‚РѕР»СЊРєРѕ С„Р°Р№Р»С‹ .json, .csv, .xlsx")
 
 
 def _extract_special_tours(competition) -> list[dict[str, Any]]:
@@ -241,7 +242,7 @@ def _extract_special_tours(competition) -> list[dict[str, Any]]:
     return fallback
 
 
-def _resolve_seat_matrix_columns(competition) -> int:
+def _resolve_default_seat_matrix_columns(competition) -> int:
     settings_payload = competition.special_settings or {}
     raw_value = settings_payload.get("seat_matrix_columns", 3)
     try:
@@ -249,6 +250,67 @@ def _resolve_seat_matrix_columns(competition) -> int:
     except (TypeError, ValueError):
         columns = 3
     return max(columns, 1)
+
+
+def _resolve_room_seat_matrix_columns(competition, room_id: UUID, is_team_mode: bool) -> int:
+    settings_payload = (competition.special_settings or {}) if competition else {}
+    room_key = str(room_id)
+
+    def _extract_from_map(mapping: Any) -> int | None:
+        if not isinstance(mapping, dict):
+            return None
+        room_payload = mapping.get(room_key)
+        if not isinstance(room_payload, dict):
+            return None
+        raw_value = room_payload.get("seat_matrix_columns")
+        try:
+            parsed = int(raw_value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    room_layouts = settings_payload.get("room_layouts")
+    team_room_layouts = settings_payload.get("team_room_layouts")
+    selected = _extract_from_map(team_room_layouts if is_team_mode else room_layouts)
+    if selected is None and is_team_mode:
+        selected = _extract_from_map(room_layouts)
+    if selected is None:
+        selected = _resolve_default_seat_matrix_columns(competition)
+    return max(int(selected), 1)
+
+
+def _resolve_room_team_table_merges(competition, room_id: UUID, tour_number: int | None) -> list[list[int]]:
+    if not competition or tour_number is None:
+        return []
+
+    settings_payload = competition.special_settings or {}
+    raw_merges = settings_payload.get("team_table_merges")
+    if not isinstance(raw_merges, dict):
+        return []
+
+    tour_payload = raw_merges.get(str(tour_number))
+    if tour_payload is None:
+        tour_payload = raw_merges.get(tour_number)
+    if not isinstance(tour_payload, dict):
+        return []
+
+    room_payload = tour_payload.get(str(room_id))
+    if not isinstance(room_payload, list):
+        return []
+
+    normalized: list[list[int]] = []
+    used_tables: set[int] = set()
+    for group in room_payload:
+        if not isinstance(group, list):
+            continue
+        group_values = sorted({int(v) for v in group if isinstance(v, int) and int(v) > 0})
+        if len(group_values) < 2:
+            continue
+        if any(v in used_tables for v in group_values):
+            continue
+        used_tables.update(group_values)
+        normalized.append(group_values)
+    return normalized
 
 
 def _resolve_special_tour_context(competition, tour_number: int | None) -> dict[str, Any] | None:
@@ -264,7 +326,7 @@ def _resolve_special_tour_context(competition, tour_number: int | None) -> dict[
     else:
         selected = next((item for item in tours if int(item.get("tour_number", 0)) == tour_number), None)
         if not selected:
-            raise HTTPException(status_code=400, detail="Указан несуществующий номер тура")
+            raise HTTPException(status_code=400, detail="РЈРєР°Р·Р°РЅ РЅРµСЃСѓС‰РµСЃС‚РІСѓСЋС‰РёР№ РЅРѕРјРµСЂ С‚СѓСЂР°")
 
     mode = str(selected.get("mode") or "individual").strip()
     return {
@@ -334,6 +396,7 @@ def _build_room_tables(
                     "occupied": seat_data is not None,
                     "variant_number": seat_data["variant_number"] if seat_data else None,
                     "participant_name": seat_data["participant_name"] if seat_data else None,
+                    "institution_id": seat_data["institution_id"] if seat_data else None,
                     "institution_name": seat_data["institution_name"] if seat_data else None,
                     "institution_location": seat_data["institution_location"] if seat_data else None,
                     "is_captain": seat_data["is_captain"] if seat_data else False,
@@ -348,6 +411,183 @@ def _build_room_tables(
                 }
             )
     return tables
+
+
+def _annotate_tables_with_merges(room_tables: list[dict[str, Any]], merge_groups: list[list[int]]) -> list[list[int]]:
+    if not room_tables:
+        return []
+
+    table_numbers = {int(table.get("table_number", 0)) for table in room_tables}
+    valid_groups: list[list[int]] = []
+    table_to_group: dict[int, int] = {}
+
+    for group in merge_groups:
+        valid_group = sorted(table for table in group if table in table_numbers)
+        if len(valid_group) < 2:
+            continue
+        group_id = len(valid_groups) + 1
+        valid_groups.append(valid_group)
+        for table_number in valid_group:
+            table_to_group[table_number] = group_id
+
+    for table in room_tables:
+        table_number = int(table.get("table_number", 0))
+        group_id = table_to_group.get(table_number)
+        table["merged_group"] = group_id
+        table["merged_with"] = (
+            [n for n in valid_groups[group_id - 1] if n != table_number]
+            if group_id
+            else []
+        )
+
+    return valid_groups
+
+
+def _project_team_seating_for_merges(
+    room_tables: list[dict[str, Any]],
+    merge_groups: list[list[int]],
+) -> None:
+    """Rebuild room table occupancy for team mode so merged groups hold one team when possible.
+
+    This is a view-layer projection for team seating plan rendering (does not persist to DB).
+    """
+    if not room_tables:
+        return
+
+    table_by_number: dict[int, dict[str, Any]] = {
+        int(table.get("table_number", 0)): table
+        for table in room_tables
+        if int(table.get("table_number", 0)) > 0
+    }
+    if not table_by_number:
+        return
+
+    valid_groups: list[list[int]] = []
+    merged_table_numbers: set[int] = set()
+    for group in merge_groups:
+        numbers = sorted({int(number) for number in group if int(number) in table_by_number})
+        if len(numbers) < 2:
+            continue
+        valid_groups.append(numbers)
+        merged_table_numbers.update(numbers)
+
+    # Collect currently seated participants and group by institution (team).
+    team_buckets: dict[str, list[dict[str, Any]]] = {}
+    for table in room_tables:
+        for seat in table.get("seats", []):
+            if not seat.get("occupied"):
+                continue
+            institution_id = seat.get("institution_id")
+            institution_name = (seat.get("institution_name") or "").strip()
+            if institution_id:
+                team_key = f"id:{institution_id}"
+            elif institution_name:
+                team_key = f"name:{institution_name.lower()}"
+            else:
+                team_key = f"solo:{seat.get('participant_name') or seat.get('seat_number')}"
+
+            team_buckets.setdefault(team_key, []).append(
+                {
+                    "occupied": True,
+                    "variant_number": seat.get("variant_number"),
+                    "participant_name": seat.get("participant_name"),
+                    "institution_id": seat.get("institution_id"),
+                    "institution_name": seat.get("institution_name"),
+                    "institution_location": seat.get("institution_location"),
+                    "is_captain": bool(seat.get("is_captain")),
+                }
+            )
+
+    def _active_team_keys() -> list[str]:
+        return sorted(
+            (key for key, bucket in team_buckets.items() if bucket),
+            key=lambda key: (-len(team_buckets[key]), key),
+        )
+
+    def _take_from_team(team_key: str, count: int) -> list[dict[str, Any]]:
+        if count <= 0:
+            return []
+        bucket = team_buckets.get(team_key) or []
+        taken = bucket[:count]
+        team_buckets[team_key] = bucket[count:]
+        return taken
+
+    def _empty_seat_payload() -> dict[str, Any]:
+        return {
+            "occupied": False,
+            "variant_number": None,
+            "participant_name": None,
+            "institution_id": None,
+            "institution_name": None,
+            "institution_location": None,
+            "is_captain": False,
+        }
+
+    # Reset all seats first.
+    for table in room_tables:
+        for seat in table.get("seats", []):
+            seat.update(_empty_seat_payload())
+
+    def _slots_for_table_number(table_number: int) -> list[dict[str, Any]]:
+        table = table_by_number.get(table_number)
+        if not table:
+            return []
+        return sorted(
+            list(table.get("seats", [])),
+            key=lambda seat: (int(seat.get("seat_at_table") or 0), int(seat.get("seat_number") or 0)),
+        )
+
+    def _assign_to_slots(slots: list[dict[str, Any]], payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        for slot, payload in zip(slots, payloads):
+            slot.update(payload)
+        return slots[len(payloads):]
+
+    merged_overflow_slots: list[dict[str, Any]] = []
+
+    # Pass 1: each merged block gets one team whenever possible.
+    for group in valid_groups:
+        slots: list[dict[str, Any]] = []
+        for table_number in group:
+            slots.extend(_slots_for_table_number(table_number))
+        if not slots:
+            continue
+        keys = _active_team_keys()
+        if not keys:
+            merged_overflow_slots.extend(slots)
+            continue
+        chosen_team = keys[0]
+        assigned = _take_from_team(chosen_team, len(slots))
+        remaining = _assign_to_slots(slots, assigned)
+        merged_overflow_slots.extend(remaining)
+
+    # Pass 2: fill non-merged tables from remaining teams.
+    non_merged_numbers = sorted(number for number in table_by_number if number not in merged_table_numbers)
+    for table_number in non_merged_numbers:
+        slots = _slots_for_table_number(table_number)
+        slot_index = 0
+        while slot_index < len(slots):
+            keys = _active_team_keys()
+            if not keys:
+                break
+            chosen_team = keys[0]
+            take_count = min(len(slots) - slot_index, len(team_buckets[chosen_team]))
+            assigned = _take_from_team(chosen_team, take_count)
+            remaining = _assign_to_slots(slots[slot_index : slot_index + take_count], assigned)
+            slot_index += take_count - len(remaining)
+
+    # Pass 3: if participants still remain, place them into free slots inside merged blocks.
+    for slot in merged_overflow_slots:
+        keys = _active_team_keys()
+        if not keys:
+            break
+        chosen_team = keys[0]
+        assigned = _take_from_team(chosen_team, 1)
+        if not assigned:
+            continue
+        slot.update(assigned[0])
+
+    for table in room_tables:
+        table["occupied"] = any(bool(seat.get("occupied")) for seat in table.get("seats", []))
 
 
 # --- User Management ---
@@ -391,14 +631,14 @@ async def create_staff_user(
     user_repo = UserRepositoryImpl(db)
 
     if await user_repo.exists_by_email(body.email):
-        raise HTTPException(status_code=400, detail="Email уже используется")
+        raise HTTPException(status_code=400, detail="Email СѓР¶Рµ РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ")
 
     # Validate participant-specific fields
     if body.role == UserRole.PARTICIPANT:
         if not body.full_name or len(body.full_name.strip()) < 2:
-            raise HTTPException(status_code=400, detail="ФИО обязательно для участников (минимум 2 символа)")
+            raise HTTPException(status_code=400, detail="Р В¤Р ВР С› Р С•Р В±РЎРЏР В·Р В°РЎвЂљР ВµР В»РЎРЉР Р…Р С• Р Т‘Р В»РЎРЏ РЎС“РЎвЂЎР В°РЎРѓРЎвЂљР Р…Р С‘Р С”Р С•Р Р† (Р СР С‘Р Р…Р С‘Р СРЎС“Р С 2 РЎРѓР С‘Р СР Р†Р С•Р В»Р В°)")
         if not body.school or len(body.school.strip()) < 2:
-            raise HTTPException(status_code=400, detail="Учебное учреждение обязательно для участников (минимум 2 символа)")
+            raise HTTPException(status_code=400, detail="РЈС‡РµР±РЅРѕРµ СѓС‡СЂРµР¶РґРµРЅРёРµ РѕР±СЏР·Р°С‚РµР»СЊРЅРѕ РґР»СЏ СѓС‡Р°СЃС‚РЅРёРєРѕРІ (РјРёРЅРёРјСѓРј 2 СЃРёРјРІРѕР»Р°)")
 
     from uuid import uuid4
 
@@ -448,7 +688,7 @@ async def update_user(
     user_repo = UserRepositoryImpl(db)
     user = await user_repo.get_by_id(user_id)
     if not user:
-        raise HTTPException(status_code=404, detail="Пользователь не найден")
+        raise HTTPException(status_code=404, detail="РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ")
 
     if body.is_active is not None:
         if body.is_active:
@@ -480,10 +720,10 @@ async def deactivate_user(
     user_repo = UserRepositoryImpl(db)
     user = await user_repo.get_by_id(user_id)
     if not user:
-        raise HTTPException(status_code=404, detail="Пользователь не найден")
+        raise HTTPException(status_code=404, detail="РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ")
 
     if user.id == current_user.id:
-        raise HTTPException(status_code=400, detail="Нельзя деактивировать себя")
+        raise HTTPException(status_code=400, detail="РќРµР»СЊР·СЏ РґРµР°РєС‚РёРІРёСЂРѕРІР°С‚СЊ СЃРµР±СЏ")
 
     user.deactivate()
     await user_repo.update(user)
@@ -688,8 +928,8 @@ async def list_competition_registrations(
             AdminRegistrationItem(
                 registration_id=reg.id,
                 participant_id=reg.participant_id,
-                participant_name=participant.full_name if participant else "—",
-                participant_school=participant.school if participant else "—",
+                participant_name=participant.full_name if participant else "вЂ”",
+                participant_school=participant.school if participant else "вЂ”",
                 participant_institution_location=participant.institution_location if participant else None,
                 participant_is_captain=participant.is_captain if participant else False,
                 institution_name=institution_name,
@@ -721,7 +961,7 @@ async def download_badges_pdf(
     )
     competition = comp_result.scalar_one_or_none()
     if not competition:
-        raise HTTPException(status_code=404, detail="Олимпиада не найдена")
+        raise HTTPException(status_code=404, detail="РћР»РёРјРїРёР°РґР° РЅРµ РЅР°Р№РґРµРЅР°")
 
     # Get registrations
     from ....infrastructure.database.models import ParticipantModel
@@ -800,11 +1040,12 @@ async def get_seating_plan(
     )
     competition = competition_result.scalar_one_or_none()
     if not competition:
-        raise HTTPException(status_code=404, detail="Олимпиада не найдена")
+        raise HTTPException(status_code=404, detail="РћР»РёРјРїРёР°РґР° РЅРµ РЅР°Р№РґРµРЅР°")
 
-    seat_matrix_columns = _resolve_seat_matrix_columns(competition)
+    default_seat_matrix_columns = _resolve_default_seat_matrix_columns(competition)
     special_tour_context = _resolve_special_tour_context(competition, tour_number=tour_number)
     is_team_mode = bool(special_tour_context and special_tour_context["is_team_mode"])
+    selected_tour_number = int(special_tour_context["tour_number"]) if special_tour_context else None
 
     rooms_result = await db.execute(
         select(RoomModel)
@@ -820,6 +1061,7 @@ async def get_seating_plan(
                 SeatAssignmentModel.seat_number,
                 SeatAssignmentModel.variant_number,
                 ParticipantModel.full_name,
+                ParticipantModel.institution_id,
                 ParticipantModel.institution_location,
                 ParticipantModel.is_captain,
                 InstitutionModel.name.label("institution_name"),
@@ -836,6 +1078,7 @@ async def get_seating_plan(
                 "seat_number": row.seat_number,
                 "variant_number": row.variant_number,
                 "participant_name": row.full_name,
+                "institution_id": row.institution_id,
                 "institution_name": row.institution_name,
                 "institution_location": row.institution_location,
                 "is_captain": row.is_captain,
@@ -848,17 +1091,39 @@ async def get_seating_plan(
             room_id=room.id,
             is_team_mode=is_team_mode,
         )
+        room_seat_matrix_columns = _resolve_room_seat_matrix_columns(
+            competition=competition,
+            room_id=room.id,
+            is_team_mode=is_team_mode,
+        )
         room_tables = _build_room_tables(
             room_capacity=room.capacity,
             seats_by_number=seats_by_number,
             seats_per_table=seats_per_table,
         )
-        matrix_rows_count = (room.capacity + seat_matrix_columns - 1) // seat_matrix_columns
+        merge_groups = _resolve_room_team_table_merges(
+            competition=competition,
+            room_id=room.id,
+            tour_number=selected_tour_number if is_team_mode else None,
+        )
+        normalized_merge_groups = _annotate_tables_with_merges(room_tables, merge_groups)
+        if is_team_mode and normalized_merge_groups:
+            _project_team_seating_for_merges(room_tables, normalized_merge_groups)
+            projected_seats = [
+                seat
+                for table in room_tables
+                for seat in table.get("seats", [])
+                if seat.get("occupied")
+            ]
+            seats = sorted(projected_seats, key=lambda seat: int(seat.get("seat_number") or 0))
+            seats_by_number = {seat["seat_number"]: seat for seat in seats}
+
+        matrix_rows_count = (room.capacity + room_seat_matrix_columns - 1) // room_seat_matrix_columns
         seat_matrix: list[list[dict[str, Any]]] = []
         for matrix_row in range(matrix_rows_count):
             row_cells: list[dict[str, Any]] = []
-            for matrix_col in range(seat_matrix_columns):
-                seat_number = matrix_row * seat_matrix_columns + matrix_col + 1
+            for matrix_col in range(room_seat_matrix_columns):
+                seat_number = matrix_row * room_seat_matrix_columns + matrix_col + 1
                 if seat_number > room.capacity:
                     continue
                 seat_data = seats_by_number.get(seat_number)
@@ -870,6 +1135,7 @@ async def get_seating_plan(
                         "occupied": seat_data is not None,
                         "variant_number": seat_data["variant_number"] if seat_data else None,
                         "participant_name": seat_data["participant_name"] if seat_data else None,
+                        "institution_id": seat_data["institution_id"] if seat_data else None,
                         "institution_name": seat_data["institution_name"] if seat_data else None,
                         "institution_location": seat_data["institution_location"] if seat_data else None,
                         "is_captain": seat_data["is_captain"] if seat_data else False,
@@ -884,10 +1150,12 @@ async def get_seating_plan(
                 "room_name": room.name,
                 "capacity": room.capacity,
                 "occupied": len(seats),
-                "seat_matrix_columns": seat_matrix_columns,
+                "seat_matrix_columns": room_seat_matrix_columns,
                 "seats_per_table": seats_per_table,
                 "tables_count": len(room_tables),
                 "occupied_tables": sum(1 for table in room_tables if table["occupied"]),
+                "table_merges": normalized_merge_groups,
+                "has_table_merges": bool(normalized_merge_groups),
                 "tables": room_tables,
                 "seat_matrix": seat_matrix,
                 "seats": seats,
@@ -900,7 +1168,7 @@ async def get_seating_plan(
         "tour_number": special_tour_context["tour_number"] if special_tour_context else None,
         "tour_mode": special_tour_context["mode"] if special_tour_context else None,
         "is_team_mode": is_team_mode,
-        "seat_matrix_columns": seat_matrix_columns,
+        "seat_matrix_columns": default_seat_matrix_columns,
         "rooms": plan_rooms,
     }
 
@@ -925,72 +1193,162 @@ async def print_seating_plan(
         "individual_captains": "Индивидуальный (капитаны)",
         "team": "Командный",
     }
-    mode_label = mode_label_map.get(seating.get("tour_mode"), seating.get("tour_mode") or "—")
+    mode_label = mode_label_map.get(seating.get("tour_mode"), seating.get("tour_mode") or "-")
+
+    def esc(value: Any, fallback: str = "-") -> str:
+        if value is None:
+            return fallback
+        text = str(value).strip()
+        if not text:
+            return fallback
+        return escape(text)
 
     room_sections: list[str] = []
     for room in seating["rooms"]:
-        matrix_rows_html: list[str] = []
-        for matrix_row in room.get("seat_matrix", []):
-            cell_html: list[str] = []
-            for cell in matrix_row:
-                seat_title = f"Стол {cell.get('table_number')}, место {cell.get('seat_at_table')}"
-                if cell.get("occupied"):
-                    cell_html.append(
-                        "<td class='seat occupied'>"
-                        f"<div><strong>#{cell['seat_number']}</strong></div>"
-                        f"<div class='muted'>{seat_title}</div>"
-                        f"<div>{cell.get('participant_name') or ''}</div>"
-                        f"<div class='muted'>Вар. {cell.get('variant_number') or '—'}</div>"
-                        f"<div class='muted'>{cell.get('institution_location') or '—'}</div>"
-                        f"{'<div class=\"captain\">Капитан</div>' if cell.get('is_captain') else ''}"
-                        "</td>"
-                    )
-                else:
-                    cell_html.append(
-                        "<td class='seat free'>"
-                        f"<div><strong>#{cell['seat_number']}</strong></div>"
-                        f"<div class='muted'>{seat_title}</div>"
-                        "<div class='muted'>Свободно</div>"
-                        "</td>"
-                    )
-            matrix_rows_html.append(f"<tr>{''.join(cell_html)}</tr>")
+        tables = room.get("tables") or []
+        table_by_number: dict[int, dict[str, Any]] = {
+            int(table.get("table_number", 0)): table
+            for table in tables
+            if int(table.get("table_number", 0)) > 0
+        }
+        table_numbers = sorted(table_by_number.keys())
+        tables_count = len(table_numbers)
 
-        matrix_columns = int(room.get("seat_matrix_columns", seating.get("seat_matrix_columns", 3)))
-        matrix_html = (
-            f"<table class='matrix' style='--matrix-cols:{max(matrix_columns, 1)};'>"
-            f"<tbody>{''.join(matrix_rows_html) or '<tr><td class=\"seat free\">Нет мест</td></tr>'}</tbody>"
-            "</table>"
-        )
+        # Horizontal columns: if config says 3, we render 3 desk columns.
+        desk_cols = max(int(room.get("seat_matrix_columns", seating.get("seat_matrix_columns", 3))), 1)
+        desk_rows = max((tables_count + desk_cols - 1) // desk_cols, 1)
 
-        table_blocks: list[str] = []
-        for table in room.get("tables", []):
-            seat_chips: list[str] = []
-            for seat in table.get("seats", []):
-                seat_label = str(seat.get("seat_at_table", ""))
-                if seat.get("occupied"):
-                    seat_chips.append(
-                        "<div class='chip occupied'>"
-                        f"<strong>{seat_label}</strong>"
-                        f"<span>{seat.get('participant_name') or ''}</span>"
-                        "</div>"
-                    )
-                else:
-                    seat_chips.append(
-                        "<div class='chip'>"
-                        f"<strong>{seat_label}</strong>"
-                        "<span>Свободно</span>"
-                        "</div>"
-                    )
-            table_blocks.append(
-                "<div class='table-card'>"
-                f"<div class='table-title'>Стол {table.get('table_number')}</div>"
-                f"<div class='chip-grid'>{''.join(seat_chips)}</div>"
+        def _table_position(table_number: int) -> tuple[int, int]:
+            index = table_number - 1
+            row = (index // desk_cols) + 1
+            col = (index % desk_cols) + 1
+            return row, col
+
+        def _render_half(seats: list[dict[str, Any]]) -> str:
+            if not seats:
+                return "<div class='seat-card empty'>Свободно</div>"
+
+            seat_cards: list[str] = []
+            for seat in seats:
+                if not seat.get("occupied"):
+                    seat_cards.append("<div class='seat-card empty'>Свободно</div>")
+                    continue
+                captain_badge = "<div class='seat-flag'>Капитан</div>" if seat.get("is_captain") else ""
+                seat_cards.append(
+                    "<div class='seat-card'>"
+                    f"<div class='seat-name'>{esc(seat.get('participant_name'))}</div>"
+                    f"<div class='seat-meta'>Место {esc(seat.get('seat_number'))} | Вариант {esc(seat.get('variant_number'))}</div>"
+                    f"<div class='seat-meta'>{esc(seat.get('institution_location'))}</div>"
+                    f"{captain_badge}"
+                    "</div>"
+                )
+            return "".join(seat_cards)
+
+        def _render_table_inner(table: dict[str, Any], title_prefix: str = "Стол") -> str:
+            seats = sorted(
+                table.get("seats", []),
+                key=lambda s: int(s.get("seat_at_table") or 0),
+            )
+            if not seats:
+                left_half: list[dict[str, Any]] = []
+                right_half: list[dict[str, Any]] = []
+            else:
+                split_index = max((len(seats) + 1) // 2, 1)
+                left_half = seats[:split_index]
+                right_half = seats[split_index:]
+            return (
+                f"<div class='desk-head'>{title_prefix} {table.get('table_number')}</div>"
+                "<div class='desk-split'>"
+                f"<div class='desk-half'>{_render_half(left_half)}</div>"
+                f"<div class='desk-half'>{_render_half(right_half)}</div>"
                 "</div>"
             )
 
-        tables_html = (
-            "<div class='tables-layout'>"
-            f"{''.join(table_blocks) or '<div class=\"muted\">Нет мест</div>'}"
+        normalized_groups: list[list[int]] = []
+        for raw_group in (room.get("table_merges") or []):
+            if not isinstance(raw_group, list):
+                continue
+            group = sorted({int(num) for num in raw_group if int(num) in table_by_number})
+            if len(group) >= 2:
+                normalized_groups.append(group)
+
+        rendered_tables: set[int] = set()
+        desk_blocks: list[str] = []
+        invalid_merges: list[str] = []
+
+        for group in normalized_groups:
+            positions = [(num, *_table_position(num)) for num in group]
+            rows = sorted({row for _, row, _ in positions})
+            cols = sorted({col for _, _, col in positions})
+
+            is_horizontal_chain = (
+                len(rows) == 1
+                and cols == list(range(min(cols), max(cols) + 1))
+                and len(cols) == len(group)
+            )
+            is_vertical_chain = (
+                len(cols) == 1
+                and rows == list(range(min(rows), max(rows) + 1))
+                and len(rows) == len(group)
+            )
+
+            if not (is_horizontal_chain or is_vertical_chain):
+                invalid_merges.append("+".join(str(num) for num in group))
+                continue
+
+            if is_horizontal_chain:
+                row_start = rows[0]
+                col_start = min(cols)
+                col_span = len(cols)
+                grid_style = f"grid-column:{col_start} / span {col_span};grid-row:{row_start};"
+                stack_class = "merged-stack horizontal"
+            else:
+                col_start = cols[0]
+                row_start = min(rows)
+                row_span = len(rows)
+                grid_style = f"grid-column:{col_start};grid-row:{row_start} / span {row_span};"
+                stack_class = "merged-stack vertical"
+
+            grouped_tables = [table_by_number[num] for num in group]
+            seats_total = sum(len(table.get("seats", [])) for table in grouped_tables)
+            occupied_total = sum(
+                1
+                for table in grouped_tables
+                for seat in table.get("seats", [])
+                if seat.get("occupied")
+            )
+            merged_label = "+".join(str(num) for num in group)
+            merged_state = "occupied" if occupied_total else "free"
+            merged_cards = "".join(
+                f"<div class='merged-table-card'>{_render_table_inner(table_by_number[num])}</div>"
+                for num in group
+            )
+            desk_blocks.append(
+                f"<div class='desk merged {merged_state}' style='{grid_style}'>"
+                f"<div class='desk-merge-title'>Столы {merged_label} ({occupied_total}/{seats_total})</div>"
+                f"<div class='{stack_class}'>{merged_cards}</div>"
+                "</div>"
+            )
+            rendered_tables.update(group)
+
+        for table_number in table_numbers:
+            if table_number in rendered_tables:
+                continue
+            table = table_by_number[table_number]
+            row, col = _table_position(table_number)
+            state = "occupied" if any(seat.get("occupied") for seat in table.get("seats", [])) else "free"
+            desk_blocks.append(
+                f"<div class='desk {state}' style='grid-column:{col};grid-row:{row};'>"
+                f"{_render_table_inner(table)}"
+                "</div>"
+            )
+
+        auditorium_html = (
+            "<div class='auditorium'>"
+            f"<div class='room-center'>{esc(room['room_name'], fallback='')}</div>"
+            f"<div class='auditorium-grid' style='--aud-rows:{desk_rows};--aud-cols:{desk_cols};'>"
+            f"{''.join(desk_blocks) or '<div class=\"no-desks\">Нет столов</div>'}"
+            "</div>"
             "</div>"
         )
 
@@ -999,11 +1357,11 @@ async def print_seating_plan(
             rows_html.append(
                 "<tr>"
                 f"<td>{seat['seat_number']}</td>"
-                f"<td>{seat['participant_name']}</td>"
-                f"<td>{seat.get('institution_name') or '—'}</td>"
-                f"<td>{seat.get('institution_location') or '—'}</td>"
+                f"<td>{esc(seat['participant_name'])}</td>"
+                f"<td>{esc(seat.get('institution_name'))}</td>"
+                f"<td>{esc(seat.get('institution_location'))}</td>"
                 f"<td>{'Да' if seat.get('is_captain') else 'Нет'}</td>"
-                f"<td>{seat['variant_number']}</td>"
+                f"<td>{esc(seat.get('variant_number'))}</td>"
                 "</tr>"
             )
 
@@ -1015,13 +1373,23 @@ async def print_seating_plan(
             f"<tbody>{''.join(rows_html) or '<tr><td colspan=\"6\">Нет рассадки</td></tr>'}</tbody>"
             "</table>"
         )
+
+        merges_text = ", ".join("+".join(str(table_number) for table_number in group) for group in normalized_groups)
+        merges_line = f"<div class='muted'>Объединения столов: {escape(merges_text)}</div>" if merges_text else ""
+        invalid_merges_line = (
+            f"<div class='merge-warning'>Не удалось отрисовать объединение для групп: {escape(', '.join(invalid_merges))}</div>"
+            if invalid_merges
+            else ""
+        )
+
         room_sections.append(
             "<section>"
-            f"<h2>{room['room_name']} ({room['occupied']}/{room['capacity']})</h2>"
-            f"<div class='muted'>Сетка мест: {room.get('seat_matrix_columns', seating.get('seat_matrix_columns', 3))} колонок</div>"
-            f"<div class='muted'>Мест за столом: {room.get('seats_per_table', 1)} · Столов: {room.get('tables_count', 0)} (занято {room.get('occupied_tables', 0)})</div>"
-            f"{tables_html}"
-            f"{matrix_html}"
+            f"<h2>{esc(room['room_name'], fallback='Аудитория')} ({room['occupied']}/{room['capacity']})</h2>"
+            f"<div class='muted'>Колонок столов: {desk_cols} | Рядов столов: {desk_rows}</div>"
+            f"<div class='muted'>Мест за столом: {room.get('seats_per_table', 1)} | Столов: {room.get('tables_count', 0)} (занято {room.get('occupied_tables', 0)})</div>"
+            f"{merges_line}"
+            f"{invalid_merges_line}"
+            f"{auditorium_html}"
             f"{table_html}"
             "</section>"
         )
@@ -1029,32 +1397,49 @@ async def print_seating_plan(
     html = (
         "<!doctype html>"
         "<html><head><meta charset='utf-8'>"
-        f"<title>Рассадка — {seating['competition_name']}</title>"
+        f"<title>Схема рассадки - {esc(seating['competition_name'])}</title>"
         "<style>"
-        "body{font-family:Arial,sans-serif;margin:24px;}"
-        "h1{margin-bottom:8px;} h2{margin-top:24px;}"
-        ".muted{color:#666;font-size:12px;}"
-        ".captain{margin-top:4px;font-size:11px;font-weight:700;color:#0b57d0;}"
-        ".matrix{table-layout:fixed;margin-top:8px;margin-bottom:10px;}"
-        ".matrix td{vertical-align:top;height:72px;width:calc(100% / var(--matrix-cols, 3));}"
-        ".seat.free{background:#fafafa;}"
-        ".seat.occupied{background:#fff;}"
-        ".tables-layout{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px;margin-top:10px;margin-bottom:12px;}"
-        ".table-card{border:1px solid #d9d9d9;border-radius:8px;padding:8px;background:#fff;}"
-        ".table-title{font-size:12px;font-weight:700;margin-bottom:6px;}"
-        ".chip-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;}"
-        ".chip{border:1px solid #e0e0e0;border-radius:6px;padding:4px 6px;font-size:11px;background:#fafafa;display:flex;gap:6px;align-items:center;}"
-        ".chip.occupied{background:#eef5ff;border-color:#bfd4ff;}"
-        ".chip strong{display:inline-block;min-width:14px;}"
-        ".chip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}"
-        "table{border-collapse:collapse;width:100%;margin-top:8px;}"
-        "th,td{border:1px solid #ccc;padding:6px 8px;font-size:12px;text-align:left;}"
-        "th{background:#f4f4f4;}"
-        "@media print{body{margin:0.5cm;} section{break-inside:avoid;}}"
+        "body{font-family:Arial,sans-serif;margin:24px;color:#111;}"
+        "h1{margin-bottom:8px;} h2{margin-top:26px;margin-bottom:6px;}"
+        ".muted{color:#5f6368;font-size:12px;}"
+        ".merge-warning{margin-top:4px;color:#b3261e;font-size:12px;}"
+        ".auditorium{position:relative;border:2px solid #202124;border-radius:10px;margin-top:12px;padding:16px;background:linear-gradient(180deg,#ffffff 0%,#f8f9fa 100%);min-height:300px;}"
+        ".room-center{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:34px;font-weight:700;color:rgba(95,99,104,.25);pointer-events:none;letter-spacing:1px;text-transform:uppercase;}"
+        ".auditorium-grid{position:relative;z-index:1;display:grid;grid-template-columns:repeat(var(--aud-cols),minmax(95px,1fr));grid-template-rows:repeat(var(--aud-rows),minmax(58px,1fr));gap:10px;min-height:260px;}"
+        ".desk{border:1.5px solid #5f6368;border-radius:8px;padding:6px;background:#fff;display:flex;flex-direction:column;gap:6px;line-height:1.25;}"
+        ".desk.occupied{background:#e8f0fe;border-color:#1a73e8;}"
+        ".desk.free{background:#f8f9fa;border-color:#9aa0a6;}"
+        ".desk.merged{border-width:2.5px;background:#e6f4ea;border-color:#137333;padding:8px;}"
+        ".desk-merge-title{font-size:12px;font-weight:700;text-align:center;}"
+        ".merged-stack{display:flex;gap:0;align-items:stretch;}"
+        ".merged-stack.vertical{flex-direction:column;}"
+        ".merged-stack.horizontal{flex-direction:row;}"
+        ".merged-table-card{border:1px solid #7aa786;border-radius:0;padding:4px;background:#fff;flex:1 1 0;}"
+        ".merged-stack.horizontal .merged-table-card + .merged-table-card{margin-left:-1px;}"
+        ".merged-stack.vertical .merged-table-card + .merged-table-card{margin-top:-1px;}"
+        ".merged-stack.horizontal .merged-table-card:first-child{border-top-left-radius:6px;border-bottom-left-radius:6px;}"
+        ".merged-stack.horizontal .merged-table-card:last-child{border-top-right-radius:6px;border-bottom-right-radius:6px;}"
+        ".merged-stack.vertical .merged-table-card:first-child{border-top-left-radius:6px;border-top-right-radius:6px;}"
+        ".merged-stack.vertical .merged-table-card:last-child{border-bottom-left-radius:6px;border-bottom-right-radius:6px;}"
+        ".desk-head{font-size:12px;font-weight:700;text-align:center;margin-bottom:4px;}"
+        ".desk-split{display:grid;grid-template-columns:1fr 1fr;border:1px solid #9aa0a6;border-radius:6px;overflow:hidden;background:#fff;}"
+        ".desk-half{min-height:74px;padding:4px;display:flex;flex-direction:column;justify-content:flex-start;}"
+        ".desk-half + .desk-half{border-left:1px solid #9aa0a6;}"
+        ".seat-card{font-size:10px;padding:2px 0;border-bottom:1px dashed #d2d6dc;}"
+        ".seat-card:last-child{border-bottom:none;}"
+        ".seat-card.empty{display:flex;align-items:center;justify-content:center;min-height:18px;color:#6b7280;}"
+        ".seat-name{font-weight:700;word-break:break-word;}"
+        ".seat-meta{color:#374151;word-break:break-word;}"
+        ".seat-flag{display:inline-block;margin-top:2px;font-size:9px;font-weight:700;color:#0b57d0;}"
+        ".no-desks{grid-column:1 / -1;display:flex;align-items:center;justify-content:center;color:#5f6368;border:1px dashed #9aa0a6;border-radius:8px;min-height:64px;}"
+        "table{border-collapse:collapse;width:100%;margin-top:10px;}"
+        "th,td{border:1px solid #c7c7c7;padding:6px 8px;font-size:12px;text-align:left;}"
+        "th{background:#f1f3f4;}"
+        "@media print{body{margin:0.5cm;} section{break-inside:avoid;page-break-inside:avoid;} .auditorium{break-inside:avoid;}}"
         "</style></head><body>"
         "<h1>Схема рассадки</h1>"
-        f"<div><strong>Олимпиада:</strong> {seating['competition_name']}</div>"
-        f"<div class='muted'>Тур: {seating.get('tour_number') or '—'} · Режим: {mode_label}</div>"
+        f"<div><strong>Олимпиада:</strong> {esc(seating['competition_name'])}</div>"
+        f"<div class='muted'>Тур: {esc(seating.get('tour_number'))} | Режим: {esc(mode_label)}</div>"
         f"{''.join(room_sections)}"
         "</body></html>"
     )
@@ -1090,14 +1475,14 @@ async def download_special_template(
     paths = generator.get_template_paths()
 
     if template_kind not in paths:
-        raise HTTPException(status_code=404, detail="Неизвестный тип шаблона")
+        raise HTTPException(status_code=404, detail="РќРµРёР·РІРµСЃС‚РЅС‹Р№ С‚РёРї С€Р°Р±Р»РѕРЅР°")
 
     path = paths[template_kind]
     try:
         with open(path, "rb") as f:
             content = f.read()
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Не удалось открыть шаблон: {exc}")
+        raise HTTPException(status_code=500, detail=f"РќРµ СѓРґР°Р»РѕСЃСЊ РѕС‚РєСЂС‹С‚СЊ С€Р°Р±Р»РѕРЅ: {exc}")
 
     filename = Path(path).name
     return Response(
@@ -1118,20 +1503,20 @@ async def upload_special_template(
     paths = generator.get_template_paths()
 
     if template_kind not in paths:
-        raise HTTPException(status_code=404, detail="Неизвестный тип шаблона")
+        raise HTTPException(status_code=404, detail="РќРµРёР·РІРµСЃС‚РЅС‹Р№ С‚РёРї С€Р°Р±Р»РѕРЅР°")
     if not (file.filename or "").lower().endswith(".docx"):
-        raise HTTPException(status_code=400, detail="Нужен файл .docx")
+        raise HTTPException(status_code=400, detail="РќСѓР¶РµРЅ С„Р°Р№Р» .docx")
 
     content = await file.read()
     if not content:
-        raise HTTPException(status_code=400, detail="Файл пустой")
+        raise HTTPException(status_code=400, detail="Р¤Р°Р№Р» РїСѓСЃС‚РѕР№")
 
     path = paths[template_kind]
     try:
         with open(path, "wb") as f:
             f.write(content)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Не удалось сохранить шаблон: {exc}")
+        raise HTTPException(status_code=500, detail=f"РќРµ СѓРґР°Р»РѕСЃСЊ СЃРѕС…СЂР°РЅРёС‚СЊ С€Р°Р±Р»РѕРЅ: {exc}")
 
     return {"status": "ok", "template_kind": template_kind, "path": path}
 
@@ -1148,14 +1533,14 @@ async def import_special_participants(
     competition_repo = CompetitionRepositoryImpl(db)
     competition = await competition_repo.get_by_id(competition_id)
     if not competition:
-        raise HTTPException(status_code=404, detail="Олимпиада не найдена")
+        raise HTTPException(status_code=404, detail="РћР»РёРјРїРёР°РґР° РЅРµ РЅР°Р№РґРµРЅР°")
     if not competition.is_special:
-        raise HTTPException(status_code=400, detail="Импорт доступен только для олимпиад с пометкой 'особая'")
+        raise HTTPException(status_code=400, detail="Р ВР СР С—Р С•РЎР‚РЎвЂљ Р Т‘Р С•РЎРѓРЎвЂљРЎС“Р С—Р ВµР Р… РЎвЂљР С•Р В»РЎРЉР С”Р С• Р Т‘Р В»РЎРЏ Р С•Р В»Р С‘Р СР С—Р С‘Р В°Р Т‘ РЎРѓ Р С—Р С•Р СР ВµРЎвЂљР С”Р С•Р в„– 'Р С•РЎРѓР С•Р В±Р В°РЎРЏ'")
 
     file_name = file.filename or ""
     file_bytes = await file.read()
     if not file_bytes:
-        raise HTTPException(status_code=400, detail="Файл пустой")
+        raise HTTPException(status_code=400, detail="Р¤Р°Р№Р» РїСѓСЃС‚РѕР№")
 
     try:
         rows = _parse_import_file(file_name, file_bytes)
@@ -1203,9 +1588,9 @@ async def import_special_participants(
             institution_name = str(normalized.get("institution") or "").strip()
 
             if len(full_name) < 2:
-                raise ValueError("Поле ФИО обязательно")
+                raise ValueError("Р СџР С•Р В»Р Вµ Р В¤Р ВР С› Р С•Р В±РЎРЏР В·Р В°РЎвЂљР ВµР В»РЎРЉР Р…Р С•")
             if len(institution_name) < 2:
-                raise ValueError("Поле ВУЗ/учреждение обязательно")
+                raise ValueError("РџРѕР»Рµ Р’РЈР—/СѓС‡СЂРµР¶РґРµРЅРёРµ РѕР±СЏР·Р°С‚РµР»СЊРЅРѕ")
 
             email = str(normalized.get("email") or "").strip().lower()
             if not email:
@@ -1246,7 +1631,7 @@ async def import_special_participants(
                 )
                 summary["created_users"] += 1
             elif user.role != UserRole.PARTICIPANT:
-                raise ValueError(f"Email {email} уже занят пользователем с ролью {user.role.value}")
+                raise ValueError(f"Email {email} СѓР¶Рµ Р·Р°РЅСЏС‚ РїРѕР»СЊР·РѕРІР°С‚РµР»РµРј СЃ СЂРѕР»СЊСЋ {user.role.value}")
 
             participant = await participant_repo.get_by_user_id(user.id)
             if participant is None:
@@ -1284,7 +1669,7 @@ async def import_special_participants(
                     )
                     summary["registered_to_competition"] += 1
                 except ValueError as exc:
-                    if "уже зарегистрированы" in str(exc):
+                    if "СѓР¶Рµ Р·Р°СЂРµРіРёСЃС‚СЂРёСЂРѕРІР°РЅС‹" in str(exc):
                         summary["skipped"] += 1
                     else:
                         raise
@@ -1306,9 +1691,9 @@ async def admit_all_special_and_download(
     competition_repo = CompetitionRepositoryImpl(db)
     competition = await competition_repo.get_by_id(competition_id)
     if not competition:
-        raise HTTPException(status_code=404, detail="Олимпиада не найдена")
+        raise HTTPException(status_code=404, detail="РћР»РёРјРїРёР°РґР° РЅРµ РЅР°Р№РґРµРЅР°")
     if not competition.is_special:
-        raise HTTPException(status_code=400, detail="Операция доступна только для олимпиад с пометкой 'особая'")
+        raise HTTPException(status_code=400, detail="РћРїРµСЂР°С†РёСЏ РґРѕСЃС‚СѓРїРЅР° С‚РѕР»СЊРєРѕ РґР»СЏ РѕР»РёРјРїРёР°Рґ СЃ РїРѕРјРµС‚РєРѕР№ 'РѕСЃРѕР±Р°СЏ'")
 
     from ....infrastructure.database.models import (
         RegistrationModel,
@@ -1354,8 +1739,8 @@ async def admit_all_special_and_download(
             admit_errors.append(
                 {
                     "registration_id": str(reg.id),
-                    "participant": reg.participant.full_name if reg.participant else "—",
-                    "error": "У регистрации отсутствует raw entry token",
+                    "participant": reg.participant.full_name if reg.participant else "вЂ”",
+                    "error": "РЈ СЂРµРіРёСЃС‚СЂР°С†РёРё РѕС‚СЃСѓС‚СЃС‚РІСѓРµС‚ raw entry token",
                 }
             )
             continue
@@ -1372,7 +1757,7 @@ async def admit_all_special_and_download(
             admit_errors.append(
                 {
                     "registration_id": str(reg.id),
-                    "participant": reg.participant.full_name if reg.participant else "—",
+                    "participant": reg.participant.full_name if reg.participant else "вЂ”",
                     "error": str(exc),
                 }
             )
@@ -1389,9 +1774,9 @@ async def admit_all_special_and_download(
     zip_buffer = io.BytesIO()
     added_files = 0
     mode_labels = {
-        "individual": "Индивидуальный",
-        "individual_captains": "Индивидуальный (капитаны)",
-        "team": "Командный",
+        "individual": "Р ВР Р…Р Т‘Р С‘Р Р†Р С‘Р Т‘РЎС“Р В°Р В»РЎРЉР Р…РЎвЂ№Р в„–",
+        "individual_captains": "Р ВР Р…Р Т‘Р С‘Р Р†Р С‘Р Т‘РЎС“Р В°Р В»РЎРЉР Р…РЎвЂ№Р в„– (Р С”Р В°Р С—Р С‘РЎвЂљР В°Р Р…РЎвЂ№)",
+        "team": "РљРѕРјР°РЅРґРЅС‹Р№",
     }
 
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:

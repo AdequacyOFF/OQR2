@@ -23,7 +23,8 @@ const competitionSchema = z.object({
 
 type CompetitionForm = z.infer<typeof competitionSchema>;
 type SpecialTemplateKind = 'answer_blank' | 'a3_cover';
-type RoomLayoutState = Record<string, { seatsPerTable: number; teamSeatsPerTable: number }>;
+type RoomLayoutState = Record<string, { seatsPerTable: number; teamSeatsPerTable: number; seatMatrixColumns: number }>;
+type TeamTableMergeState = Record<string, string>;
 
 const CompetitionsAdminPage: React.FC = () => {
   const [competitions, setCompetitions] = useState<Competition[]>([]);
@@ -57,9 +58,9 @@ const CompetitionsAdminPage: React.FC = () => {
   const [registering, setRegistering] = useState(false);
   const [specialTourModes, setSpecialTourModes] = useState<string[]>([]);
   const [specialTourTasks, setSpecialTourTasks] = useState<string[]>([]);
-  const [specialSeatMatrixColumns, setSpecialSeatMatrixColumns] = useState(3);
   const [specialCaptainsRoomId, setSpecialCaptainsRoomId] = useState('');
   const [specialRoomLayouts, setSpecialRoomLayouts] = useState<RoomLayoutState>({});
+  const [teamTableMergesTour3, setTeamTableMergesTour3] = useState<TeamTableMergeState>({});
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importing, setImporting] = useState(false);
   const [admitAndDownloadLoading, setAdmitAndDownloadLoading] = useState(false);
@@ -83,6 +84,7 @@ const CompetitionsAdminPage: React.FC = () => {
   const isSpecialCompetition = watch('is_special');
   const specialToursCount = watch('special_tours_count');
   const hasIndividualCaptainsMode = specialTourModes.some((mode) => mode === 'individual_captains');
+  const thirdTourIsTeamMode = specialTourModes[2] === 'team';
   const formTeamTourNumbers = specialTourModes
     .map((mode, index) => (mode === 'team' ? index + 1 : null))
     .filter((value): value is number => value !== null);
@@ -96,9 +98,9 @@ const CompetitionsAdminPage: React.FC = () => {
     if (!isSpecialCompetition) {
       setSpecialTourModes([]);
       setSpecialTourTasks([]);
-      setSpecialSeatMatrixColumns(3);
       setSpecialCaptainsRoomId('');
       setSpecialRoomLayouts({});
+      setTeamTableMergesTour3({});
       return;
     }
     const count = Number(specialToursCount || 0);
@@ -146,13 +148,22 @@ const CompetitionsAdminPage: React.FC = () => {
           next[room.id] = {
             seatsPerTable: parsePositiveInt(current?.seatsPerTable, 1),
             teamSeatsPerTable: parsePositiveInt(current?.teamSeatsPerTable, 2),
+            seatMatrixColumns: parsePositiveInt(current?.seatMatrixColumns, 3),
           };
+        });
+        return next;
+      });
+      setTeamTableMergesTour3((prev) => {
+        const next: TeamTableMergeState = {};
+        rooms.forEach((room) => {
+          next[room.id] = prev[room.id] || '';
         });
         return next;
       });
     } catch {
       setExistingRooms([]);
       setSpecialRoomLayouts({});
+      setTeamTableMergesTour3({});
     } finally {
       setRoomsLoading(false);
     }
@@ -170,6 +181,43 @@ const CompetitionsAdminPage: React.FC = () => {
   function parsePositiveInt(value: unknown, fallback: number): number {
     const parsed = Number(value);
     return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+  }
+
+  function parseTeamTableMergesInput(value: string): number[][] {
+    const used = new Set<number>();
+    return value
+      .split(',')
+      .map((group) =>
+        group
+          .split('+')
+          .map((token) => Number(token.trim()))
+          .filter((token) => Number.isInteger(token) && token > 0)
+      )
+      .map((group) => Array.from(new Set(group)))
+      .filter((group) => group.length > 1)
+      .map((group) => {
+        const filtered = group.filter((tableNumber) => {
+          if (used.has(tableNumber)) return false;
+          used.add(tableNumber);
+          return true;
+        });
+        return filtered;
+      })
+      .filter((group) => group.length > 1);
+  }
+
+  function formatTeamTableMerges(groups: unknown): string {
+    if (!Array.isArray(groups)) return '';
+    const normalized = groups
+      .map((group) =>
+        Array.isArray(group)
+          ? group
+            .map((n) => Number(n))
+            .filter((n) => Number.isInteger(n) && n > 0)
+          : []
+      )
+      .filter((group) => group.length > 1);
+    return normalized.map((group) => group.join('+')).join(', ');
   }
 
   function extractToursFromSettings(comp: Competition): Array<{ tourNumber: number; mode: string; taskNumbers: number[] }> {
@@ -205,6 +253,10 @@ const CompetitionsAdminPage: React.FC = () => {
     const settings = comp.special_settings;
     if (!settings || typeof settings !== 'object') return {};
 
+    const defaultSeatMatrixColumns = parsePositiveInt(
+      (settings as { seat_matrix_columns?: unknown }).seat_matrix_columns,
+      3
+    );
     const rawRoomLayouts = (settings as { room_layouts?: unknown }).room_layouts;
     const rawTeamRoomLayouts = (settings as { team_room_layouts?: unknown }).team_room_layouts;
 
@@ -213,9 +265,14 @@ const CompetitionsAdminPage: React.FC = () => {
       Object.entries(rawRoomLayouts as Record<string, unknown>).forEach(([roomId, payload]) => {
         if (!payload || typeof payload !== 'object') return;
         const seatsPerTable = parsePositiveInt((payload as { seats_per_table?: unknown }).seats_per_table, 1);
+        const seatMatrixColumns = parsePositiveInt(
+          (payload as { seat_matrix_columns?: unknown }).seat_matrix_columns,
+          defaultSeatMatrixColumns
+        );
         parsed[roomId] = {
           seatsPerTable,
           teamSeatsPerTable: 2,
+          seatMatrixColumns,
         };
       });
     }
@@ -227,11 +284,28 @@ const CompetitionsAdminPage: React.FC = () => {
         parsed[roomId] = {
           seatsPerTable: parsed[roomId]?.seatsPerTable ?? 1,
           teamSeatsPerTable,
+          seatMatrixColumns: parsed[roomId]?.seatMatrixColumns ?? defaultSeatMatrixColumns,
         };
       });
     }
 
     return parsed;
+  }
+
+  function extractTour3TableMergesFromSettings(comp: Competition): TeamTableMergeState {
+    const settings = comp.special_settings;
+    if (!settings || typeof settings !== 'object') return {};
+    const raw = (settings as { team_table_merges?: unknown }).team_table_merges;
+    if (!raw || typeof raw !== 'object') return {};
+
+    const byTour = (raw as Record<string, unknown>)['3'];
+    if (!byTour || typeof byTour !== 'object') return {};
+
+    const result: TeamTableMergeState = {};
+    Object.entries(byTour as Record<string, unknown>).forEach(([roomId, groups]) => {
+      result[roomId] = formatTeamTableMerges(groups);
+    });
+    return result;
   }
 
   const openCreate = () => {
@@ -252,9 +326,9 @@ const CompetitionsAdminPage: React.FC = () => {
     setNewRoomCapacity(30);
     setSpecialTourModes([]);
     setSpecialTourTasks([]);
-    setSpecialSeatMatrixColumns(3);
     setSpecialCaptainsRoomId('');
     setSpecialRoomLayouts({});
+    setTeamTableMergesTour3({});
     setTeamTourForPrint(null);
     setImportFile(null);
     setAnswerTemplateFile(null);
@@ -271,10 +345,9 @@ const CompetitionsAdminPage: React.FC = () => {
     const settings = (comp.special_settings && typeof comp.special_settings === 'object')
       ? (comp.special_settings as Record<string, unknown>)
       : {};
-    const rawSeatColumns = settings.seat_matrix_columns;
-    const parsedSeatColumns = Number(rawSeatColumns);
     const rawCaptainsRoomId = settings.captains_room_id;
     const parsedRoomLayouts = extractRoomLayoutsFromSettings(comp);
+    const parsedTour3TableMerges = extractTour3TableMergesFromSettings(comp);
 
     setEditingId(comp.id);
     setValue('name', comp.name);
@@ -298,9 +371,9 @@ const CompetitionsAdminPage: React.FC = () => {
         return taskNumbers.join(', ');
       })
     );
-    setSpecialSeatMatrixColumns(Number.isInteger(parsedSeatColumns) && parsedSeatColumns > 0 ? parsedSeatColumns : 3);
     setSpecialCaptainsRoomId(typeof rawCaptainsRoomId === 'string' ? rawCaptainsRoomId : '');
     setSpecialRoomLayouts(parsedRoomLayouts);
+    setTeamTableMergesTour3(parsedTour3TableMerges);
     setTeamTourForPrint(null);
     setImportFile(null);
     setAnswerTemplateFile(null);
@@ -361,19 +434,34 @@ const CompetitionsAdminPage: React.FC = () => {
         delete next[roomId];
         return next;
       });
+      setTeamTableMergesTour3((prev) => {
+        const next = { ...prev };
+        delete next[roomId];
+        return next;
+      });
       await loadRooms(editingId);
     } catch {
       setError('Не удалось удалить аудиторию.');
     }
   };
 
-  const updateRoomLayout = (roomId: string, field: 'seatsPerTable' | 'teamSeatsPerTable', value: number) => {
+  const updateRoomLayout = (
+    roomId: string,
+    field: 'seatsPerTable' | 'teamSeatsPerTable' | 'seatMatrixColumns',
+    value: number
+  ) => {
+    const fallbackByField = {
+      seatsPerTable: 1,
+      teamSeatsPerTable: 2,
+      seatMatrixColumns: 3,
+    } as const;
     setSpecialRoomLayouts((prev) => ({
       ...prev,
       [roomId]: {
         seatsPerTable: parsePositiveInt(prev[roomId]?.seatsPerTable, 1),
         teamSeatsPerTable: parsePositiveInt(prev[roomId]?.teamSeatsPerTable, 2),
-        [field]: parsePositiveInt(value, field === 'seatsPerTable' ? 1 : 2),
+        seatMatrixColumns: parsePositiveInt(prev[roomId]?.seatMatrixColumns, 3),
+        [field]: parsePositiveInt(value, fallbackByField[field]),
       },
     }));
   };
@@ -390,7 +478,10 @@ const CompetitionsAdminPage: React.FC = () => {
       const normalizedRoomLayouts = Object.fromEntries(
         Object.entries(specialRoomLayouts).map(([roomId, layout]) => [
           roomId,
-          { seats_per_table: parsePositiveInt(layout.seatsPerTable, 1) },
+          {
+            seats_per_table: parsePositiveInt(layout.seatsPerTable, 1),
+            seat_matrix_columns: parsePositiveInt(layout.seatMatrixColumns, 3),
+          },
         ])
       );
       const normalizedTeamRoomLayouts = Object.fromEntries(
@@ -399,6 +490,13 @@ const CompetitionsAdminPage: React.FC = () => {
           { seats_per_table: parsePositiveInt(layout.teamSeatsPerTable, 2) },
         ])
       );
+      const normalizedTour3TableMerges = thirdTourIsTeamMode
+        ? Object.fromEntries(
+            Object.entries(teamTableMergesTour3)
+              .map(([roomId, text]) => [roomId, parseTeamTableMergesInput(text)] as const)
+              .filter(([, groups]) => groups.length > 0)
+          )
+        : {};
 
       const payload = {
         ...data,
@@ -408,12 +506,14 @@ const CompetitionsAdminPage: React.FC = () => {
               import_supported_formats: ['json', 'csv', 'xlsx'],
               archive_mode: 'participant_folders',
               templates_format: 'word_docx',
-              seat_matrix_columns: Math.max(1, Number(specialSeatMatrixColumns || 3)),
               captains_room_id: hasIndividualCaptainsMode && specialCaptainsRoomId ? specialCaptainsRoomId : null,
               default_seats_per_table: 1,
               team_default_seats_per_table: 2,
               room_layouts: normalizedRoomLayouts,
               team_room_layouts: normalizedTeamRoomLayouts,
+              team_table_merges: Object.keys(normalizedTour3TableMerges).length > 0
+                ? { '3': normalizedTour3TableMerges }
+                : {},
               tours,
             }
           : null,
@@ -435,9 +535,9 @@ const CompetitionsAdminPage: React.FC = () => {
       setExistingRooms([]);
       setSpecialTourModes([]);
       setSpecialTourTasks([]);
-      setSpecialSeatMatrixColumns(3);
       setSpecialCaptainsRoomId('');
       setSpecialRoomLayouts({});
+      setTeamTableMergesTour3({});
       setTeamTourForPrint(null);
       setImportFile(null);
       setAnswerTemplateFile(null);
@@ -851,9 +951,9 @@ const CompetitionsAdminPage: React.FC = () => {
           setExistingRooms([]);
           setSpecialTourModes([]);
           setSpecialTourTasks([]);
-          setSpecialSeatMatrixColumns(3);
           setSpecialCaptainsRoomId('');
           setSpecialRoomLayouts({});
+          setTeamTableMergesTour3({});
           setTeamTourForPrint(null);
           setImportFile(null);
           setAnswerTemplateFile(null);
@@ -951,13 +1051,6 @@ const CompetitionsAdminPage: React.FC = () => {
                   </p>
                 </div>
               )}
-              <Input
-                label="Колонок в сетке рассадки"
-                type="number"
-                min={1}
-                value={specialSeatMatrixColumns}
-                onChange={(e) => setSpecialSeatMatrixColumns(Math.max(1, Number(e.target.value || 1)))}
-              />
               {hasIndividualCaptainsMode && (
                 <div className="form-group">
                   <label className="label">Аудитория капитанов (для режима «индивидуальный, капитаны»)</label>
@@ -1084,13 +1177,13 @@ const CompetitionsAdminPage: React.FC = () => {
               )}
               <div style={{ display: 'grid', gap: 8 }}>
                 {existingRooms.map((room) => {
-                  const layout = specialRoomLayouts[room.id] || { seatsPerTable: 1, teamSeatsPerTable: 2 };
+                  const layout = specialRoomLayouts[room.id] || { seatsPerTable: 1, teamSeatsPerTable: 2, seatMatrixColumns: 3 };
                   return (
                     <div
                       key={`layout-${room.id}`}
                       style={{
                         display: 'grid',
-                        gridTemplateColumns: '1.2fr 1fr 1fr',
+                        gridTemplateColumns: '1.2fr 1fr 1fr 1fr',
                         gap: 8,
                         alignItems: 'end',
                       }}
@@ -1113,10 +1206,34 @@ const CompetitionsAdminPage: React.FC = () => {
                         value={layout.teamSeatsPerTable}
                         onChange={(e) => updateRoomLayout(room.id, 'teamSeatsPerTable', Number(e.target.value || 2))}
                       />
+                      <Input
+                        label="Колонок сетки"
+                        type="number"
+                        min={1}
+                        value={layout.seatMatrixColumns}
+                        onChange={(e) => updateRoomLayout(room.id, 'seatMatrixColumns', Number(e.target.value || 3))}
+                      />
+                      {thirdTourIsTeamMode && (
+                        <div style={{ gridColumn: '1 / -1' }}>
+                          <Input
+                            label="Объединения столов (тур 3)"
+                            placeholder="Например: 1+2,3+4+5"
+                            value={teamTableMergesTour3[room.id] || ''}
+                            onChange={(e) =>
+                              setTeamTableMergesTour3((prev) => ({ ...prev, [room.id]: e.target.value }))
+                            }
+                          />
+                        </div>
+                      )}
                     </div>
                   );
                 })}
               </div>
+              {thirdTourIsTeamMode && (
+                <p className="text-muted" style={{ marginTop: 8, fontSize: 12 }}>
+                  Объединения столов для тура 3: формат `1+2,3+4+5` (каждая группа столов через запятую).
+                </p>
+              )}
             </div>
           )}
 

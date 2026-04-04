@@ -98,7 +98,6 @@ class AssignSeatUseCase:
         branch_key = self._participant_branch_key(participant)
         special_mode = self._resolve_special_mode(competition)
         apply_neighborhood_rule = special_mode in {"individual", "individual_captains"}
-        seat_columns = self._resolve_seat_columns(competition)
         captains_room_id = self._resolve_captains_room_id(competition)
         is_captain = bool(getattr(participant, "is_captain", False))
 
@@ -142,6 +141,11 @@ class AssignSeatUseCase:
                 else 0
             )
             seats_per_table = self._resolve_room_seats_per_table(
+                competition=competition,
+                room_id=room.id,
+                special_mode=special_mode,
+            )
+            seat_columns = self._resolve_room_seat_columns(
                 competition=competition,
                 room_id=room.id,
                 special_mode=special_mode,
@@ -238,7 +242,7 @@ class AssignSeatUseCase:
         return None
 
     @staticmethod
-    def _resolve_seat_columns(competition) -> int:
+    def _resolve_default_seat_columns(competition) -> int:
         settings_payload = getattr(competition, "special_settings", None) or {}
         raw_value = settings_payload.get("seat_matrix_columns", 3)
         try:
@@ -246,6 +250,34 @@ class AssignSeatUseCase:
         except (TypeError, ValueError):
             columns = 3
         return max(columns, 1)
+
+    @staticmethod
+    def _resolve_room_seat_columns(competition, room_id: UUID, special_mode: str | None) -> int:
+        settings_payload = getattr(competition, "special_settings", None) or {}
+        room_key = str(room_id)
+        is_team_mode = special_mode == "team"
+
+        def _extract(mapping) -> int | None:
+            if not isinstance(mapping, dict):
+                return None
+            room_payload = mapping.get(room_key)
+            if not isinstance(room_payload, dict):
+                return None
+            raw = room_payload.get("seat_matrix_columns")
+            try:
+                parsed = int(raw)
+            except (TypeError, ValueError):
+                return None
+            return parsed if parsed > 0 else None
+
+        raw_room_layouts = settings_payload.get("room_layouts")
+        raw_team_layouts = settings_payload.get("team_room_layouts")
+        value = _extract(raw_team_layouts if is_team_mode else raw_room_layouts)
+        if value is None and is_team_mode:
+            value = _extract(raw_room_layouts)
+        if value is None:
+            value = AssignSeatUseCase._resolve_default_seat_columns(competition)
+        return max(value, 1)
 
     @staticmethod
     def _resolve_room_seats_per_table(competition, room_id: UUID, special_mode: str | None) -> int:

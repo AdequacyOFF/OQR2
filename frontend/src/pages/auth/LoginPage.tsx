@@ -18,6 +18,7 @@ const roleRedirects: Record<string, string> = {
   participant: '/dashboard',
   admitter: '/admission',
   scanner: '/scans',
+  invigilator: '/invigilator',
   admin: '/admin',
 };
 

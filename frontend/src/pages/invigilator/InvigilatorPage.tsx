@@ -19,6 +19,14 @@ interface ResolveSheetResult {
   participant_name: string;
   competition_id: string;
   competition_name: string;
+  is_special_competition?: boolean;
+  special_tours?: SpecialTourOption[] | null;
+}
+
+interface SpecialTourOption {
+  tour_number: number;
+  mode: string;
+  task_numbers: number[];
 }
 
 interface AttemptSheet {
@@ -39,6 +47,120 @@ interface SearchParticipantItem {
   primary_answer_sheet_id: string | null;
 }
 
+const parseFilenameFromContentDisposition = (contentDisposition?: string): string | null => {
+  if (!contentDisposition) return null;
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      return utf8Match[1];
+    }
+  }
+  const plainMatch = contentDisposition.match(/filename="?([^"]+)"?/i);
+  return plainMatch?.[1] || null;
+};
+
+const downloadBlob = (blob: Blob, filename: string): void => {
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+};
+
+const extractSpecialToursFromCompetition = (competition: {
+  is_special?: boolean;
+  special_tours_count?: number | null;
+  special_tour_modes?: string[] | null;
+  special_settings?: Record<string, unknown> | null;
+}): SpecialTourOption[] => {
+  if (!competition?.is_special) return [];
+
+  const settings =
+    competition.special_settings && typeof competition.special_settings === 'object'
+      ? competition.special_settings
+      : null;
+  const rawTours = settings && Array.isArray(settings.tours) ? settings.tours : null;
+
+  const normalized: SpecialTourOption[] = [];
+  if (rawTours) {
+    rawTours.forEach((tour, index) => {
+      if (!tour || typeof tour !== 'object') return;
+      const source = tour as Record<string, unknown>;
+      const tourNumberRaw = source.tour_number ?? index + 1;
+      const modeRaw = source.mode ?? 'individual';
+      const tasksRaw = Array.isArray(source.task_numbers)
+        ? source.task_numbers
+        : Array.isArray(source.tasks)
+          ? source.tasks
+          : [1];
+
+      const tourNumber = Number(tourNumberRaw);
+      const mode = String(modeRaw);
+      const taskNumbers = tasksRaw
+        .map((task) => Number(task))
+        .filter((task) => Number.isFinite(task) && task > 0)
+        .map((task) => Math.trunc(task));
+
+      if (Number.isFinite(tourNumber) && tourNumber > 0 && taskNumbers.length > 0) {
+        normalized.push({
+          tour_number: Math.trunc(tourNumber),
+          mode,
+          task_numbers: Array.from(new Set(taskNumbers)).sort((a, b) => a - b),
+        });
+      }
+    });
+  }
+
+  if (normalized.length > 0) return normalized;
+
+  const count = Number(competition.special_tours_count ?? 1);
+  const modes = Array.isArray(competition.special_tour_modes) ? competition.special_tour_modes : [];
+  if (!Number.isFinite(count) || count < 1) return [];
+
+  return Array.from({ length: Math.trunc(count) }, (_, idx) => ({
+    tour_number: idx + 1,
+    mode: modes[idx] || 'individual',
+    task_numbers: [1],
+  }));
+};
+
+const normalizeScannedToken = (rawToken: string): string => {
+  const token = (rawToken || '').trim().replace(/\uFEFF/g, '').replace(/\u200B/g, '');
+  if (!token) return '';
+
+  try {
+    const url = new URL(token);
+    const fromQuery =
+      url.searchParams.get('sheet_token') ||
+      url.searchParams.get('token') ||
+      url.searchParams.get('qr') ||
+      url.searchParams.get('data');
+    if (fromQuery) return decodeURIComponent(fromQuery).trim();
+
+    const pathValue = decodeURIComponent(url.pathname || '').trim();
+    if (pathValue.toLowerCase().includes('attempt:') || pathValue.toLowerCase().includes('attempt/')) {
+      return pathValue.replace(/^\/+/, '').trim();
+    }
+
+    const pathTail = url.pathname.split('/').filter(Boolean).pop();
+    if (pathTail) return decodeURIComponent(pathTail).trim();
+  } catch {
+    // Not an URL, continue with plain token.
+  }
+
+  try {
+    return decodeURIComponent(token).trim();
+  } catch {
+    return token;
+  }
+};
+
 const InvigilatorPage: React.FC = () => {
   const [scanMode, setScanMode] = useState<'camera' | 'laser'>('laser');
   const [scanning, setScanning] = useState(true);
@@ -49,6 +171,8 @@ const InvigilatorPage: React.FC = () => {
   const [recording, setRecording] = useState(false);
   const [issuingExtra, setIssuingExtra] = useState(false);
   const [extraSheetToken, setExtraSheetToken] = useState<string | null>(null);
+  const [selectedTourNumber, setSelectedTourNumber] = useState<number | null>(null);
+  const [selectedTaskNumber, setSelectedTaskNumber] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchItems, setSearchItems] = useState<SearchParticipantItem[]>([]);
   const [searching, setSearching] = useState(false);
@@ -63,13 +187,19 @@ const InvigilatorPage: React.FC = () => {
   }, [scanMode, scanning]);
 
   const handleScan = async (token: string) => {
+    const normalizedToken = normalizeScannedToken(token);
+    if (!normalizedToken) {
+      setError('QR-код пустой или поврежден');
+      return;
+    }
+
     setError(null);
     try {
       const { data } = await api.post<ResolveSheetResult>('invigilator/resolve-sheet-token', {
-        sheet_token: token,
+        sheet_token: normalizedToken,
       });
       setResolved(data);
-      setAttemptId(data.attempt_id);
+      setAttemptId(String(data.attempt_id));
       setScanning(false);
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Не удалось найти бланк по токену';
@@ -93,8 +223,8 @@ const InvigilatorPage: React.FC = () => {
         api.get<{ events: ParticipantEvent[] }>(`invigilator/attempt/${aId}/events`),
         api.get<{ sheets: AttemptSheet[] }>(`invigilator/attempt/${aId}/sheets`),
       ]);
-      setEvents(eventsRes.data.events || []);
-      setAnswerSheets(sheetsRes.data.sheets || []);
+      setEvents(Array.isArray(eventsRes.data?.events) ? eventsRes.data.events : []);
+      setAnswerSheets(Array.isArray(sheetsRes.data?.sheets) ? sheetsRes.data.sheets : []);
     } catch {
       // Ignore context loading errors
     }
@@ -105,6 +235,28 @@ const InvigilatorPage: React.FC = () => {
       fetchAttemptContext(attemptId);
     }
   }, [attemptId]);
+
+  useEffect(() => {
+    const tours = resolved?.special_tours || [];
+    if (!resolved?.is_special_competition || tours.length === 0) {
+      setSelectedTourNumber(null);
+      setSelectedTaskNumber(null);
+      return;
+    }
+
+    const currentTour = tours.find((t) => t.tour_number === selectedTourNumber) || tours[0];
+    setSelectedTourNumber(currentTour.tour_number);
+
+    const taskNumbers = currentTour.task_numbers || [];
+    if (taskNumbers.length === 0) {
+      setSelectedTaskNumber(null);
+      return;
+    }
+
+    if (!selectedTaskNumber || !taskNumbers.includes(selectedTaskNumber)) {
+      setSelectedTaskNumber(taskNumbers[0]);
+    }
+  }, [resolved, selectedTourNumber, selectedTaskNumber]);
 
   const handleRecordEvent = async (eventType: string) => {
     if (!attemptId) return;
@@ -131,11 +283,36 @@ const InvigilatorPage: React.FC = () => {
     setError(null);
 
     try {
-      const { data } = await api.post<{ answer_sheet_id: string; sheet_token: string; pdf_url: string }>(
-        'invigilator/extra-sheet',
-        { attempt_id: attemptId }
-      );
-      setExtraSheetToken(data.sheet_token);
+      const isSpecial = Boolean(resolved?.is_special_competition);
+      if (isSpecial) {
+        if (!selectedTourNumber || !selectedTaskNumber) {
+          setError('Выберите тур и задание для доп.бланка');
+          return;
+        }
+
+        const response = await api.post(
+          'invigilator/special-extra-sheet/download',
+          {
+            attempt_id: attemptId,
+            tour_number: selectedTourNumber,
+            task_number: selectedTaskNumber,
+          },
+          { responseType: 'blob' }
+        );
+
+        const filename =
+          parseFilenameFromContentDisposition(response.headers['content-disposition']) ||
+          `extra_t${selectedTourNumber}_task${selectedTaskNumber}.docx`;
+        downloadBlob(response.data as Blob, filename);
+        setExtraSheetToken(null);
+      } else {
+        const { data } = await api.post<{ answer_sheet_id: string; sheet_token: string; pdf_url: string }>(
+          'invigilator/extra-sheet',
+          { attempt_id: attemptId }
+        );
+        setExtraSheetToken(data.sheet_token);
+      }
+
       await fetchAttemptContext(attemptId);
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Ошибка';
@@ -163,17 +340,48 @@ const InvigilatorPage: React.FC = () => {
     }
   };
 
-  const handleDownloadSheet = (answerSheetId: string) => {
-    window.open(`/api/v1/invigilator/answer-sheet/${answerSheetId}/download`, '_blank');
+  const handleDownloadSheet = async (answerSheetId: string) => {
+    try {
+      const response = await api.get(`invigilator/answer-sheet/${answerSheetId}/download`, {
+        responseType: 'blob',
+      });
+      const filename =
+        parseFilenameFromContentDisposition(response.headers['content-disposition']) ||
+        `answer_sheet_${answerSheetId}.pdf`;
+      downloadBlob(response.data as Blob, filename);
+    } catch (err: unknown) {
+      const msg =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Не удалось скачать бланк';
+      setError(msg);
+    }
   };
 
-  const handleSelectParticipant = (item: SearchParticipantItem) => {
+  const handleSelectParticipant = async (item: SearchParticipantItem) => {
+    let specialTours: SpecialTourOption[] | null = null;
+    let isSpecialCompetition = false;
+
+    try {
+      const { data } = await api.get<{
+        is_special: boolean;
+        special_tours_count: number | null;
+        special_tour_modes: string[] | null;
+        special_settings: Record<string, unknown> | null;
+      }>(`competitions/${item.competition_id}`);
+      isSpecialCompetition = Boolean(data.is_special);
+      specialTours = extractSpecialToursFromCompetition(data);
+    } catch {
+      // Ignore optional competition details loading for participant selection.
+    }
+
     setResolved({
       attempt_id: item.attempt_id,
       answer_sheet_id: item.primary_answer_sheet_id,
       participant_name: item.participant_name,
       competition_id: item.competition_id,
       competition_name: item.competition_name,
+      is_special_competition: isSpecialCompetition,
+      special_tours: specialTours,
     });
     setAttemptId(item.attempt_id);
     setScanning(false);
@@ -187,6 +395,8 @@ const InvigilatorPage: React.FC = () => {
     setEvents([]);
     setAnswerSheets([]);
     setExtraSheetToken(null);
+    setSelectedTourNumber(null);
+    setSelectedTaskNumber(null);
     setError(null);
   };
 
@@ -334,6 +544,42 @@ const InvigilatorPage: React.FC = () => {
 
           <div className="mb-16">
             <h3 className="mb-8">Дополнительный бланк</h3>
+            {resolved?.is_special_competition && (resolved.special_tours || []).length > 0 && (
+              <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+                <select
+                  className="input"
+                  value={selectedTourNumber ?? ''}
+                  onChange={(e) => {
+                    const nextTour = Number(e.target.value);
+                    setSelectedTourNumber(Number.isFinite(nextTour) ? nextTour : null);
+                  }}
+                  style={{ minWidth: 140 }}
+                >
+                  {(resolved.special_tours || []).map((tour) => (
+                    <option key={tour.tour_number} value={tour.tour_number}>
+                      {`Тур ${tour.tour_number}`}
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  className="input"
+                  value={selectedTaskNumber ?? ''}
+                  onChange={(e) => {
+                    const nextTask = Number(e.target.value);
+                    setSelectedTaskNumber(Number.isFinite(nextTask) ? nextTask : null);
+                  }}
+                  style={{ minWidth: 140 }}
+                >
+                  {((resolved.special_tours || []).find((t) => t.tour_number === selectedTourNumber)?.task_numbers || [])
+                    .map((taskNumber) => (
+                      <option key={taskNumber} value={taskNumber}>
+                        {`Задание ${taskNumber}`}
+                      </option>
+                    ))}
+                </select>
+              </div>
+            )}
             <Button onClick={handleIssueExtraSheet} loading={issuingExtra}>
               Выдать дополнительный бланк
             </Button>
@@ -396,7 +642,7 @@ const InvigilatorPage: React.FC = () => {
                         <Button
                           variant="secondary"
                           className="btn-sm"
-                          onClick={() => handleDownloadSheet(item.primary_answer_sheet_id)}
+                          onClick={() => handleDownloadSheet(item.primary_answer_sheet_id!)}
                         >
                           QR/PDF
                         </Button>

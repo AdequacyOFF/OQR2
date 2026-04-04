@@ -117,6 +117,72 @@ class Competition:
                         raise ValueError(
                             f"special_settings.{layout_key}.{room_id}.seats_per_table must be >= 1"
                         )
+                    raw_seat_matrix_columns = room_layout.get("seat_matrix_columns")
+                    if raw_seat_matrix_columns is not None:
+                        try:
+                            parsed_seat_matrix_columns = int(raw_seat_matrix_columns)
+                        except (TypeError, ValueError):
+                            raise ValueError(
+                                f"special_settings.{layout_key}.{room_id}.seat_matrix_columns must be an integer"
+                            )
+                        if parsed_seat_matrix_columns < 1:
+                            raise ValueError(
+                                f"special_settings.{layout_key}.{room_id}.seat_matrix_columns must be >= 1"
+                            )
+
+            raw_team_table_merges = self.special_settings.get("team_table_merges")
+            if raw_team_table_merges is not None:
+                if not isinstance(raw_team_table_merges, dict):
+                    raise ValueError("special_settings.team_table_merges must be an object")
+                for tour_key, rooms_payload in raw_team_table_merges.items():
+                    try:
+                        parsed_tour = int(str(tour_key))
+                    except (TypeError, ValueError):
+                        raise ValueError("special_settings.team_table_merges keys must be tour numbers")
+                    if parsed_tour < 1:
+                        raise ValueError("special_settings.team_table_merges tour number must be >= 1")
+                    if not isinstance(rooms_payload, dict):
+                        raise ValueError(
+                            f"special_settings.team_table_merges.{tour_key} must be an object mapping room_id to groups"
+                        )
+                    for room_id, groups_payload in rooms_payload.items():
+                        try:
+                            UUID(str(room_id))
+                        except (TypeError, ValueError):
+                            raise ValueError(
+                                f"special_settings.team_table_merges.{tour_key} contains invalid room id: {room_id}"
+                            )
+                        if not isinstance(groups_payload, list):
+                            raise ValueError(
+                                f"special_settings.team_table_merges.{tour_key}.{room_id} must be a list of groups"
+                            )
+                        used_tables: set[int] = set()
+                        for group in groups_payload:
+                            if not isinstance(group, list):
+                                raise ValueError(
+                                    f"special_settings.team_table_merges.{tour_key}.{room_id} group must be a list"
+                                )
+                            if len(group) < 2:
+                                raise ValueError(
+                                    f"special_settings.team_table_merges.{tour_key}.{room_id} group must contain at least 2 tables"
+                                )
+                            normalized_group: set[int] = set()
+                            for table_number in group:
+                                if not isinstance(table_number, int) or table_number < 1:
+                                    raise ValueError(
+                                        f"special_settings.team_table_merges.{tour_key}.{room_id} must contain only positive table numbers"
+                                    )
+                                normalized_group.add(table_number)
+                            if len(normalized_group) < 2:
+                                raise ValueError(
+                                    f"special_settings.team_table_merges.{tour_key}.{room_id} group must contain at least 2 unique tables"
+                                )
+                            overlap = used_tables.intersection(normalized_group)
+                            if overlap:
+                                raise ValueError(
+                                    f"special_settings.team_table_merges.{tour_key}.{room_id} has duplicated table numbers across groups: {sorted(overlap)}"
+                                )
+                            used_tables.update(normalized_group)
 
             tours = self.special_settings.get("tours")
             if tours is not None:

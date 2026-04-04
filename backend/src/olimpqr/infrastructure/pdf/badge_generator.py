@@ -8,6 +8,7 @@ from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
 from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase import pdfmetrics
 
 from ...domain.services import QRService
 from .sheet_generator import _register_fonts, _FONT_REGULAR, _FONT_BOLD
@@ -25,10 +26,10 @@ class BadgeData:
 class BadgeGenerator:
     """Generator for participant badge PDFs with QR codes."""
 
-    # Badge dimensions (3x3 grid on A4)
-    COLS = 3
-    ROWS = 3
-    BADGES_PER_PAGE = 9
+    # Badge dimensions (fixed 90x120 mm, 2x2 grid on A4)
+    COLS = 2
+    ROWS = 2
+    BADGES_PER_PAGE = 4
 
     # A4 page
     PAGE_W, PAGE_H = A4
@@ -37,12 +38,24 @@ class BadgeGenerator:
     MARGIN_X = 10 * mm
     MARGIN_Y = 10 * mm
 
-    # Badge size (calculated to fit 3x3 on A4 with margins)
-    BADGE_W = (PAGE_W - 2 * MARGIN_X) / COLS   # ~63.3mm
-    BADGE_H = (PAGE_H - 2 * MARGIN_Y) / ROWS   # ~92.3mm
+    # Badge size (required)
+    BADGE_W = 90 * mm
+    BADGE_H = 120 * mm
+
+    # Header area and spacing in the page grid
+    HEADER_OFFSET = 15 * mm
+    GAP_X = max((PAGE_W - 2 * MARGIN_X - (COLS * BADGE_W)) / max(COLS - 1, 1), 0)
+    GAP_Y = max((PAGE_H - 2 * MARGIN_Y - HEADER_OFFSET - (ROWS * BADGE_H)) / max(ROWS - 1, 1), 0)
 
     # QR size inside badge
-    QR_SIZE = 30 * mm
+    QR_SIZE = 38 * mm
+
+    # Typography
+    TITLE_FONT_SIZE = 13
+    COMP_FONT_SIZE = 8
+    NAME_FONT_SIZE = 12
+    SCHOOL_FONT_SIZE = 8
+    HINT_FONT_SIZE = 7
 
     def __init__(self):
         _register_fonts()
@@ -74,7 +87,7 @@ class BadgeGenerator:
         # Sort groups alphabetically
         sorted_institutions = sorted(groups.keys())
 
-        badge_index = 0  # position on current page (0..8)
+        badge_index = 0  # position on current page (0..3)
         first_page = True
 
         for institution in sorted_institutions:
@@ -99,10 +112,9 @@ class BadgeGenerator:
                 row = badge_index // self.COLS
 
                 # Badge origin (bottom-left corner)
-                x = self.MARGIN_X + col * self.BADGE_W
+                x = self.MARGIN_X + col * (self.BADGE_W + self.GAP_X)
                 # Offset rows down to leave room for header
-                header_offset = 15 * mm
-                y = self.PAGE_H - self.MARGIN_Y - header_offset - (row + 1) * self.BADGE_H
+                y = self.PAGE_H - self.MARGIN_Y - self.HEADER_OFFSET - (row + 1) * self.BADGE_H - row * self.GAP_Y
 
                 self._draw_badge(c, x, y, badge, competition_name)
                 badge_index += 1
@@ -122,6 +134,60 @@ class BadgeGenerator:
             f"{competition_name} — {institution}",
         )
 
+    @staticmethod
+    def _line_height_mm(font_size_pt: float) -> float:
+        # 1pt = 0.352778 mm, with ~1.2 line spacing
+        return font_size_pt * 0.352778 * 1.2
+
+    @staticmethod
+    def _fit_text_lines(
+        text: str,
+        font_name: str,
+        font_size: float,
+        max_width: float,
+        max_lines: int,
+    ) -> list[str]:
+        text = (text or "").strip()
+        if not text:
+            return [""]
+
+        words = text.split()
+        lines: list[str] = []
+        current = ""
+
+        def _width(value: str) -> float:
+            return pdfmetrics.stringWidth(value, font_name, font_size)
+
+        for word in words:
+            candidate = f"{current} {word}".strip()
+            if not current or _width(candidate) <= max_width:
+                current = candidate
+                continue
+            lines.append(current)
+            current = word
+            if len(lines) == max_lines:
+                break
+
+        if len(lines) < max_lines and current:
+            lines.append(current)
+
+        if not lines:
+            lines = [text]
+
+        # Fallback for long tokens without spaces and final clamp.
+        for i, line in enumerate(lines):
+            if _width(line) <= max_width:
+                continue
+            trimmed = line
+            while len(trimmed) > 1 and _width(trimmed + "...") > max_width:
+                trimmed = trimmed[:-1]
+            lines[i] = trimmed + ("..." if trimmed != line else "")
+
+        if len(lines) > max_lines:
+            lines = lines[:max_lines]
+
+        return lines
+
     def _draw_badge(
         self,
         c: canvas.Canvas,
@@ -133,7 +199,9 @@ class BadgeGenerator:
         """Draw a single badge at the given position."""
         w = self.BADGE_W
         h = self.BADGE_H
-        pad = 3 * mm
+        pad = 4 * mm
+        content_w = w - 2 * pad
+        content_h = h - 2 * pad
 
         # Dashed cut-line border
         c.setStrokeColor(colors.grey)
@@ -142,65 +210,93 @@ class BadgeGenerator:
         c.rect(x, y, w, h)
         c.setDash()  # reset
 
-        # Inner content area
-        cx = x + w / 2  # center x
-        top = y + h - pad
-
-        # Logo
         import os
+
         logo_path = os.path.join(os.path.dirname(__file__), "logo_black.png")
+        logo_size = 16 * mm
+        logo_image = None
         if os.path.exists(logo_path):
             try:
-                logo_size = 12 * mm
                 logo_image = ImageReader(logo_path)
-                c.drawImage(
-                    logo_image,
-                    cx - logo_size / 2,
-                    top - logo_size,
-                    width=logo_size,
-                    height=logo_size,
-                    preserveAspectRatio=True,
-                    mask="auto",
-                )
-                top -= logo_size + 2 * mm
             except Exception:
-                pass
+                logo_image = None
 
-        # "OlimpQR" title
-        c.setFont(_FONT_BOLD, 9)
-        c.drawCentredString(cx, top - 3 * mm, "OlimpQR")
-        top -= 7 * mm
+        comp_lines = self._fit_text_lines(
+            text=competition_name,
+            font_name=_FONT_REGULAR,
+            font_size=self.COMP_FONT_SIZE,
+            max_width=content_w,
+            max_lines=2,
+        )
+        name_lines = self._fit_text_lines(
+            text=badge.name,
+            font_name=_FONT_BOLD,
+            font_size=self.NAME_FONT_SIZE,
+            max_width=content_w,
+            max_lines=2,
+        )
+        school_lines = self._fit_text_lines(
+            text=badge.school,
+            font_name=_FONT_REGULAR,
+            font_size=self.SCHOOL_FONT_SIZE,
+            max_width=content_w,
+            max_lines=2,
+        )
 
-        # Competition name (smaller)
-        c.setFont(_FONT_REGULAR, 6)
-        comp_text = competition_name
-        if len(comp_text) > 30:
-            comp_text = comp_text[:28] + "..."
-        c.drawCentredString(cx, top - 2 * mm, comp_text)
-        top -= 6 * mm
+        title_h = self._line_height_mm(self.TITLE_FONT_SIZE)
+        comp_h = len(comp_lines) * self._line_height_mm(self.COMP_FONT_SIZE)
+        name_h = len(name_lines) * self._line_height_mm(self.NAME_FONT_SIZE)
+        school_h = len(school_lines) * self._line_height_mm(self.SCHOOL_FONT_SIZE)
+        hint_h = self._line_height_mm(self.HINT_FONT_SIZE)
+        logo_h = logo_size if logo_image is not None else 0
 
-        # Participant name (bold, may need wrapping)
-        c.setFont(_FONT_BOLD, 8)
-        name = badge.name
-        if len(name) > 28:
-            # Two-line name
-            mid = name.rfind(" ", 0, 28)
-            if mid == -1:
-                mid = 28
-            c.drawCentredString(cx, top - 2 * mm, name[:mid])
-            c.drawCentredString(cx, top - 5 * mm - 2 * mm, name[mid:].strip())
-            top -= 11 * mm
-        else:
-            c.drawCentredString(cx, top - 2 * mm, name)
-            top -= 6 * mm
+        gap = 2.2 * mm
+        parts_count = 6 if logo_image is not None else 5
+        block_h = logo_h + title_h + comp_h + name_h + school_h + self.QR_SIZE + hint_h + gap * (parts_count - 1)
 
-        # School (smaller)
-        c.setFont(_FONT_REGULAR, 6)
-        school = badge.school
-        if len(school) > 35:
-            school = school[:33] + "..."
-        c.drawCentredString(cx, top - 2 * mm, school)
-        top -= 6 * mm
+        cx = x + w / 2
+        top = y + pad + (content_h + block_h) / 2
+
+        if logo_image is not None:
+            c.drawImage(
+                logo_image,
+                cx - logo_size / 2,
+                top - logo_size,
+                width=logo_size,
+                height=logo_size,
+                preserveAspectRatio=True,
+                mask="auto",
+            )
+            top -= logo_size + gap
+
+        c.setFont(_FONT_BOLD, self.TITLE_FONT_SIZE)
+        title_baseline = top - title_h + (title_h - self.TITLE_FONT_SIZE * 0.352778) / 2
+        c.drawCentredString(cx, title_baseline, "OlimpQR")
+        top -= title_h + gap
+
+        c.setFont(_FONT_REGULAR, self.COMP_FONT_SIZE)
+        comp_line_h = self._line_height_mm(self.COMP_FONT_SIZE)
+        for line in comp_lines:
+            baseline = top - comp_line_h + (comp_line_h - self.COMP_FONT_SIZE * 0.352778) / 2
+            c.drawCentredString(cx, baseline, line)
+            top -= comp_line_h
+        top -= gap
+
+        c.setFont(_FONT_BOLD, self.NAME_FONT_SIZE)
+        name_line_h = self._line_height_mm(self.NAME_FONT_SIZE)
+        for line in name_lines:
+            baseline = top - name_line_h + (name_line_h - self.NAME_FONT_SIZE * 0.352778) / 2
+            c.drawCentredString(cx, baseline, line)
+            top -= name_line_h
+        top -= gap
+
+        c.setFont(_FONT_REGULAR, self.SCHOOL_FONT_SIZE)
+        school_line_h = self._line_height_mm(self.SCHOOL_FONT_SIZE)
+        for line in school_lines:
+            baseline = top - school_line_h + (school_line_h - self.SCHOOL_FONT_SIZE * 0.352778) / 2
+            c.drawCentredString(cx, baseline, line)
+            top -= school_line_h
+        top -= gap
 
         # QR code (centered)
         qr_bytes = self.qr_service.generate_qr_code(
@@ -209,14 +305,21 @@ class BadgeGenerator:
         qr_buffer = BytesIO(qr_bytes)
         qr_image = ImageReader(qr_buffer)
         qr_x = cx - self.QR_SIZE / 2
-        qr_y = top - self.QR_SIZE - 1 * mm
+        qr_y = top - self.QR_SIZE
         c.drawImage(
-            qr_image, qr_x, qr_y, width=self.QR_SIZE, height=self.QR_SIZE,
+            qr_image,
+            qr_x,
+            qr_y,
+            width=self.QR_SIZE,
+            height=self.QR_SIZE,
             preserveAspectRatio=True,
         )
+        top = qr_y - gap
 
         # Hint text below QR
-        c.setFont(_FONT_REGULAR, 5)
+        c.setFont(_FONT_REGULAR, self.HINT_FONT_SIZE)
         c.setFillColor(colors.grey)
-        c.drawCentredString(cx, qr_y - 3 * mm, "Покажите QR-код для допуска")
+        hint_line_h = self._line_height_mm(self.HINT_FONT_SIZE)
+        hint_baseline = top - hint_line_h + (hint_line_h - self.HINT_FONT_SIZE * 0.352778) / 2
+        c.drawCentredString(cx, hint_baseline, "Show QR code for admission")
         c.setFillColor(colors.black)

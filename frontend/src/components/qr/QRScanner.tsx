@@ -12,6 +12,30 @@ const QRScanner: React.FC<QRScannerProps> = ({ onScan, onError }) => {
   const [cameras, setCameras] = useState<{ id: string; label: string }[]>([]);
   const [selectedCamera, setSelectedCamera] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
+  const stoppingRef = useRef(false);
+
+  const stopAndClearScanner = useCallback(async () => {
+    const scanner = html5QrCodeRef.current;
+    if (!scanner || stoppingRef.current) return;
+
+    stoppingRef.current = true;
+    try {
+      try {
+        await scanner.stop();
+      } catch {
+        // Ignore stop errors.
+      }
+      try {
+        await scanner.clear();
+      } catch {
+        // Ignore clear errors.
+      }
+    } finally {
+      html5QrCodeRef.current = null;
+      setIsScanning(false);
+      stoppingRef.current = false;
+    }
+  }, []);
 
   // Get available cameras
   useEffect(() => {
@@ -51,10 +75,9 @@ const QRScanner: React.FC<QRScannerProps> = ({ onScan, onError }) => {
         },
         (decodedText) => {
           // Stop scanning after successful read
-          html5QrCode.stop().then(() => {
-            setIsScanning(false);
+          void stopAndClearScanner().then(() => {
             onScan(decodedText);
-          }).catch(() => {});
+          });
         },
         () => {
           // Ignore errors - happens every frame without QR
@@ -68,27 +91,20 @@ const QRScanner: React.FC<QRScannerProps> = ({ onScan, onError }) => {
       setError(`Ошибка запуска камеры: ${error.message}`);
       if (onError) onError(error.message);
     }
-  }, [selectedCamera, isScanning, onScan, onError]);
+  }, [selectedCamera, isScanning, onScan, onError, stopAndClearScanner]);
 
   const stopScanning = useCallback(async () => {
     if (html5QrCodeRef.current && isScanning) {
-      try {
-        await html5QrCodeRef.current.stop();
-        setIsScanning(false);
-      } catch {
-        // Ignore stop errors
-      }
+      await stopAndClearScanner();
     }
-  }, [isScanning]);
+  }, [isScanning, stopAndClearScanner]);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (html5QrCodeRef.current) {
-        html5QrCodeRef.current.stop().catch(() => {});
-      }
+      void stopAndClearScanner();
     };
-  }, []);
+  }, [stopAndClearScanner]);
 
   // Auto-start when camera is selected
   useEffect(() => {

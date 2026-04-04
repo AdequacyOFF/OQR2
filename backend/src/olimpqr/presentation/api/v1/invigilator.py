@@ -1,7 +1,9 @@
 """Invigilator API endpoints."""
 
-from typing import Annotated
-from uuid import UUID
+from typing import Annotated, Any
+from uuid import UUID, uuid4
+import re
+from urllib.parse import parse_qs, unquote, urlparse
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -15,9 +17,10 @@ from ....infrastructure.repositories import (
 )
 from ....infrastructure.storage import MinIOStorage
 from ....infrastructure.pdf import SheetGenerator
-from ....domain.value_objects import UserRole
+from ....infrastructure.docx import WordTemplateGenerator
+from ....domain.value_objects import UserRole, SheetKind
 from ....domain.services import TokenService
-from ....domain.entities import User
+from ....domain.entities import User, AnswerSheet
 from ....application.use_cases.invigilator import (
     RecordEventUseCase,
     IssueExtraSheetUseCase,
@@ -28,10 +31,12 @@ from ...schemas.invigilator_schemas import (
     RecordEventResponse,
     IssueExtraSheetRequest,
     IssueExtraSheetResponse,
+    IssueSpecialExtraSheetRequest,
     EventItem,
     AttemptEventsResponse,
     ResolveSheetTokenRequest,
     ResolveSheetTokenResponse,
+    SpecialTourOption,
     AttemptSheetItem,
     AttemptSheetsResponse,
     SearchSheetItem,
@@ -43,6 +48,148 @@ from ...dependencies import require_role
 from ....config import settings
 
 router = APIRouter()
+ATTEMPT_TOKEN_PATTERN = re.compile(
+    r"attempt[:/](?P<attempt_id>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})",
+    re.IGNORECASE,
+)
+ATTEMPT_TOKEN_LEGACY_PATTERN = re.compile(
+    r"^(?P<attempt_id>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?=[:/]|$)",
+    re.IGNORECASE,
+)
+MODE_LABELS = {
+    "individual": "Индивидуальный",
+    "individual_captains": "Индивидуальный (капитаны отдельно)",
+    "team": "Командный",
+}
+
+
+def _normalize_sheet_token(raw_token: str) -> str:
+    """Normalize scanned token from laser/camera scanners."""
+    token = (raw_token or "").strip().strip('"').strip("'")
+    token = token.replace("\ufeff", "").replace("\u200b", "").strip()
+    if not token:
+        return ""
+
+    parsed = urlparse(token)
+    if parsed.scheme in {"http", "https"}:
+        query = parse_qs(parsed.query)
+        for key in ("sheet_token", "token", "qr", "data"):
+            values = query.get(key)
+            if values and values[0].strip():
+                return unquote(values[0]).strip()
+
+        path_value = unquote(parsed.path).strip()
+        if "attempt:" in path_value.lower() or "attempt/" in path_value.lower():
+            return path_value.strip("/")
+
+        tail = unquote(parsed.path.rsplit("/", 1)[-1]).strip()
+        if tail:
+            return tail
+
+    return unquote(token).strip()
+
+
+def _extract_attempt_id_from_token(token: str) -> UUID | None:
+    """Try to extract attempt UUID from direct special-blank QR payloads."""
+    match = ATTEMPT_TOKEN_PATTERN.search(token)
+    if not match:
+        # Backward compatibility:
+        # old special templates encoded token as "<attempt_id>:tour:...".
+        match = ATTEMPT_TOKEN_LEGACY_PATTERN.search(token)
+    if not match:
+        return None
+    try:
+        return UUID(match.group("attempt_id"))
+    except ValueError:
+        return None
+
+
+def _extract_special_tours(competition) -> list[dict[str, Any]]:
+    """Extract normalized special tours config from competition settings."""
+    if not competition or not getattr(competition, "is_special", False):
+        return []
+
+    allowed_modes = {"individual", "individual_captains", "team"}
+    settings_payload = competition.special_settings or {}
+    raw_tours = settings_payload.get("tours")
+
+    normalized: list[dict[str, Any]] = []
+    if isinstance(raw_tours, list):
+        for idx, item in enumerate(raw_tours, start=1):
+            if not isinstance(item, dict):
+                continue
+            tour_number = int(item.get("tour_number") or idx)
+            mode = str(item.get("mode") or "individual").strip()
+            if mode not in allowed_modes:
+                mode = "individual"
+            task_numbers = item.get("task_numbers") or item.get("tasks") or [1]
+            tasks: list[int] = []
+            for task in task_numbers:
+                try:
+                    val = int(task)
+                    if val > 0:
+                        tasks.append(val)
+                except Exception:  # noqa: BLE001
+                    continue
+            if not tasks:
+                tasks = [1]
+            normalized.append(
+                {
+                    "tour_number": tour_number,
+                    "mode": mode,
+                    "task_numbers": sorted(set(tasks)),
+                }
+            )
+
+    if normalized:
+        return normalized
+
+    tours_count = int(getattr(competition, "special_tours_count", 0) or 1)
+    modes = getattr(competition, "special_tour_modes", None) or []
+    fallback: list[dict[str, Any]] = []
+    for idx in range(tours_count):
+        mode = str(modes[idx]) if idx < len(modes) else "individual"
+        if mode not in allowed_modes:
+            mode = "individual"
+        fallback.append(
+            {
+                "tour_number": idx + 1,
+                "mode": mode,
+                "task_numbers": [1],
+            }
+        )
+    return fallback
+
+
+def _resolve_mode_label(mode: str) -> str:
+    return MODE_LABELS.get(mode, mode)
+
+
+def _compute_next_special_extra_index(
+    sheets: list[AnswerSheet],
+    attempt_id: UUID,
+    tour_number: int,
+    task_number: int,
+) -> int:
+    """Compute next extra-sheet index for one attempt/tour/task."""
+    prefix = f"sheets/special_extra/{attempt_id}/tour_{tour_number}/task_{task_number}/extra_"
+    max_index = 0
+
+    for sheet in sheets:
+        if sheet.kind != SheetKind.EXTRA or not sheet.pdf_file_path:
+            continue
+        path = sheet.pdf_file_path
+        if not path.startswith(prefix):
+            continue
+        suffix = path[len(prefix):]
+        raw_number = suffix.split("_", 1)[0]
+        try:
+            number = int(raw_number)
+        except ValueError:
+            continue
+        max_index = max(max_index, number)
+
+    return max_index + 1
 
 
 @router.post("/events", response_model=RecordEventResponse, status_code=status.HTTP_201_CREATED)
@@ -104,6 +251,99 @@ async def issue_extra_sheet(
         )
 
 
+@router.post("/special-extra-sheet/download")
+async def issue_special_extra_sheet_and_download(
+    request_body: IssueSpecialExtraSheetRequest,
+    current_user: Annotated[User, Depends(require_role(UserRole.INVIGILATOR, UserRole.ADMIN))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Issue special olympiad extra sheet and download as DOCX."""
+    from ....infrastructure.database.models import RegistrationModel
+
+    attempt_repo = AttemptRepositoryImpl(db)
+    sheet_repo = AnswerSheetRepositoryImpl(db)
+    attempt = await attempt_repo.get_by_id(request_body.attempt_id)
+    if not attempt:
+        raise HTTPException(status_code=404, detail="Попытка не найдена")
+
+    stmt = (
+        select(RegistrationModel)
+        .where(RegistrationModel.id == attempt.registration_id)
+        .options(selectinload(RegistrationModel.competition))
+    )
+    result = await db.execute(stmt)
+    registration = result.scalar_one_or_none()
+    competition = registration.competition if registration else None
+    if not competition:
+        raise HTTPException(status_code=404, detail="Не найдено соревнование для попытки")
+    if not competition.is_special:
+        raise HTTPException(status_code=400, detail="Этот формат доп.бланка доступен только для особой олимпиады")
+
+    tours = _extract_special_tours(competition)
+    selected_tour = next(
+        (item for item in tours if int(item.get("tour_number", 0)) == request_body.tour_number),
+        None,
+    )
+    if not selected_tour:
+        raise HTTPException(status_code=400, detail="Указанный тур не найден в настройках олимпиады")
+
+    allowed_tasks = selected_tour.get("task_numbers", [])
+    if request_body.task_number not in allowed_tasks:
+        raise HTTPException(status_code=400, detail="Указанное задание не найдено в выбранном туре")
+
+    existing_sheets = await sheet_repo.get_by_attempt(attempt.id)
+    extra_index = _compute_next_special_extra_index(
+        existing_sheets,
+        attempt_id=attempt.id,
+        tour_number=request_body.tour_number,
+        task_number=request_body.task_number,
+    )
+
+    token_service = TokenService(settings.hmac_secret_key)
+    sheet_token = token_service.generate_token(size_bytes=settings.qr_token_size_bytes)
+
+    answer_sheet = AnswerSheet(
+        id=uuid4(),
+        attempt_id=attempt.id,
+        sheet_token_hash=sheet_token.hash,
+        kind=SheetKind.EXTRA,
+    )
+
+    object_name = (
+        f"sheets/special_extra/{attempt.id}/tour_{request_body.tour_number}/"
+        f"task_{request_body.task_number}/extra_{extra_index}_{answer_sheet.id}.docx"
+    )
+
+    mode_label = _resolve_mode_label(str(selected_tour.get("mode") or "individual"))
+    tour_task_value = f"{request_body.tour_number}/{request_body.task_number}/{extra_index}"
+    word_generator = WordTemplateGenerator()
+    docx_bytes = word_generator.generate_answer_blank(
+        qr_payload=sheet_token.raw,
+        tour_number=request_body.tour_number,
+        task_number=request_body.task_number,
+        mode=mode_label,
+        tour_task=tour_task_value,
+    )
+
+    storage = MinIOStorage()
+    storage.upload_file(
+        bucket=settings.minio_bucket_sheets,
+        object_name=object_name,
+        data=docx_bytes,
+        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+    answer_sheet.pdf_file_path = object_name
+    await sheet_repo.create(answer_sheet)
+
+    filename = f"extra_t{request_body.tour_number}_task{request_body.task_number}_{extra_index}.docx"
+    return Response(
+        content=docx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/attempt/{attempt_id}/events", response_model=AttemptEventsResponse)
 async def get_attempt_events(
     attempt_id: UUID,
@@ -158,25 +398,25 @@ async def resolve_sheet_token(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """Resolve raw sheet token to attempt + participant context."""
+    normalized_token = _normalize_sheet_token(request_body.sheet_token)
+    if not normalized_token:
+        raise HTTPException(status_code=400, detail="Пустой QR-токен")
+
     sheet_repo = AnswerSheetRepositoryImpl(db)
     attempt_repo = AttemptRepositoryImpl(db)
     attempt = None
     answer_sheet = None
 
-    # 1) New direct token format for Word templates: attempt:<attempt_id>:...
-    if request_body.sheet_token.startswith("attempt:"):
-        parts = request_body.sheet_token.split(":")
-        if len(parts) >= 2:
-            try:
-                parsed_attempt_id = UUID(parts[1])
-                attempt = await attempt_repo.get_by_id(parsed_attempt_id)
-            except ValueError:
-                attempt = None
+    # 1) Direct token format for Word templates: attempt:<attempt_id>:...
+    # Also accepts wrapped forms (URL/path/extra prefix chars).
+    direct_attempt_id = _extract_attempt_id_from_token(normalized_token)
+    if direct_attempt_id:
+        attempt = await attempt_repo.get_by_id(direct_attempt_id)
 
     # 2) Standard hashed token format (legacy + primary/extra sheets).
     if not attempt:
         token_service = TokenService(settings.hmac_secret_key)
-        token_hash = token_service.hash_token(request_body.sheet_token).value
+        token_hash = token_service.hash_token(normalized_token).value
         answer_sheet = await sheet_repo.get_by_token_hash(token_hash)
         if answer_sheet:
             attempt = await attempt_repo.get_by_id(answer_sheet.attempt_id)
@@ -213,12 +453,26 @@ async def resolve_sheet_token(
     if not registration or not registration.participant or not registration.competition:
         raise HTTPException(status_code=404, detail="Не удалось найти контекст участника")
 
+    is_special_competition = bool(getattr(registration.competition, "is_special", False))
+    special_tours_payload = None
+    if is_special_competition:
+        special_tours_payload = [
+            SpecialTourOption(
+                tour_number=int(item["tour_number"]),
+                mode=str(item["mode"]),
+                task_numbers=[int(v) for v in item["task_numbers"]],
+            )
+            for item in _extract_special_tours(registration.competition)
+        ]
+
     return ResolveSheetTokenResponse(
         attempt_id=attempt.id,
         answer_sheet_id=answer_sheet.id if answer_sheet else None,
         participant_name=registration.participant.full_name,
         competition_id=registration.competition.id,
         competition_name=registration.competition.name,
+        is_special_competition=is_special_competition,
+        special_tours=special_tours_payload,
     )
 
 
@@ -350,7 +604,7 @@ async def download_answer_sheet(
     current_user: Annotated[User, Depends(require_role(UserRole.INVIGILATOR, UserRole.ADMIN, UserRole.SCANNER))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Download answer sheet PDF file by answer_sheet_id."""
+    """Download answer sheet file by answer_sheet_id."""
     repo = AnswerSheetRepositoryImpl(db)
     sheet = await repo.get_by_id(answer_sheet_id)
     if not sheet:
@@ -360,17 +614,24 @@ async def download_answer_sheet(
 
     storage = MinIOStorage()
     try:
-        pdf_bytes = storage.download_file(
+        file_bytes = storage.download_file(
             bucket=settings.minio_bucket_sheets,
             object_name=sheet.pdf_file_path,
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=404, detail=f"Не удалось скачать PDF: {exc}")
 
+    if sheet.pdf_file_path and sheet.pdf_file_path.lower().endswith(".docx"):
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        filename = f"answer_sheet_{answer_sheet_id}.docx"
+    else:
+        media_type = "application/pdf"
+        filename = f"answer_sheet_{answer_sheet_id}.pdf"
+
     return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
+        content=file_bytes,
+        media_type=media_type,
         headers={
-            "Content-Disposition": f'attachment; filename="answer_sheet_{answer_sheet_id}.pdf"',
+            "Content-Disposition": f'attachment; filename="{filename}"',
         },
     )
