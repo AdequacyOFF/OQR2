@@ -22,7 +22,7 @@ const competitionSchema = z.object({
 });
 
 type CompetitionForm = z.infer<typeof competitionSchema>;
-type SpecialTemplateKind = 'answer_blank' | 'a3_cover';
+type SpecialTemplateKind = 'answer_blank' | 'a3_cover' | 'badge';
 type RoomLayoutState = Record<string, { seatsPerTable: number; teamSeatsPerTable: number; seatMatrixColumns: number }>;
 type TeamTableMergeState = Record<string, string>;
 
@@ -64,9 +64,13 @@ const CompetitionsAdminPage: React.FC = () => {
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importing, setImporting] = useState(false);
   const [admitAndDownloadLoading, setAdmitAndDownloadLoading] = useState(false);
+  const [badgesDownloading, setBadgesDownloading] = useState(false);
   const [teamTourForPrint, setTeamTourForPrint] = useState<number | null>(null);
   const [answerTemplateFile, setAnswerTemplateFile] = useState<File | null>(null);
   const [a3TemplateFile, setA3TemplateFile] = useState<File | null>(null);
+  const [badgeTemplateFile, setBadgeTemplateFile] = useState<File | null>(null);
+  const [badgePhotosZipFile, setBadgePhotosZipFile] = useState<File | null>(null);
+  const [badgePhotosUploading, setBadgePhotosUploading] = useState(false);
   const [templateUploadingKind, setTemplateUploadingKind] = useState<SpecialTemplateKind | null>(null);
   const [templateDownloadingKind, setTemplateDownloadingKind] = useState<SpecialTemplateKind | null>(null);
 
@@ -542,6 +546,8 @@ const CompetitionsAdminPage: React.FC = () => {
       setImportFile(null);
       setAnswerTemplateFile(null);
       setA3TemplateFile(null);
+      setBadgeTemplateFile(null);
+      setBadgePhotosZipFile(null);
       await loadCompetitions();
     } catch (err: unknown) {
       const message =
@@ -575,6 +581,8 @@ const CompetitionsAdminPage: React.FC = () => {
     setImportFile(null);
     setAnswerTemplateFile(null);
     setA3TemplateFile(null);
+    setBadgeTemplateFile(null);
+    setBadgePhotosZipFile(null);
     try {
       const [regRes, participantsRes] = await Promise.all([
         api.get<{ items: AdminRegistrationItem[]; total: number }>(`admin/registrations/${comp.id}`),
@@ -633,25 +641,34 @@ const CompetitionsAdminPage: React.FC = () => {
       const response = await api.get<string>(endpoint, {
         responseType: 'text',
         headers: { Accept: 'text/html' },
+        timeout: 60000,
       });
       printWindow.document.open();
       printWindow.document.write(response.data);
       printWindow.document.close();
     } catch (err: unknown) {
-      printWindow.close();
       const message =
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
         'Не удалось открыть страницу печати.';
+      try {
+        printWindow.document.open();
+        printWindow.document.write(`<html><body style="font-family: sans-serif; padding: 16px;"><h3>Ошибка</h3><p>${message}</p></body></html>`);
+        printWindow.document.close();
+      } catch {
+        printWindow.close();
+      }
       setError(message);
     }
   };
 
   const handleDownloadBadges = async () => {
     if (!regCompetition) return;
+    setBadgesDownloading(true);
     setError(null);
     try {
       const response = await api.get(`admin/registrations/${regCompetition.id}/badges-pdf`, {
         responseType: 'blob',
+        timeout: 300000,
       });
       const blob = new Blob([response.data], { type: 'application/pdf' });
       downloadBlob(blob, `badges_${regCompetition.id}.pdf`);
@@ -660,6 +677,8 @@ const CompetitionsAdminPage: React.FC = () => {
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
         'Не удалось скачать бейджи PDF.';
       setError(message);
+    } finally {
+      setBadgesDownloading(false);
     }
   };
 
@@ -756,7 +775,9 @@ const CompetitionsAdminPage: React.FC = () => {
       });
       const fallbackName = kind === 'answer_blank'
         ? 'special_answer_blank_template.docx'
-        : 'special_cover_a3_template.docx';
+        : kind === 'a3_cover'
+          ? 'special_cover_a3_template.docx'
+          : 'badge_template.docx';
       downloadBlob(new Blob([response.data]), fallbackName);
     } catch (err: unknown) {
       const message =
@@ -780,8 +801,10 @@ const CompetitionsAdminPage: React.FC = () => {
       });
       if (kind === 'answer_blank') {
         setAnswerTemplateFile(null);
-      } else {
+      } else if (kind === 'a3_cover') {
         setA3TemplateFile(null);
+      } else {
+        setBadgeTemplateFile(null);
       }
       alert('Шаблон успешно обновлен.');
     } catch (err: unknown) {
@@ -791,6 +814,31 @@ const CompetitionsAdminPage: React.FC = () => {
       setError(message);
     } finally {
       setTemplateUploadingKind(null);
+    }
+  };
+
+  const handleUploadBadgePhotosZip = async () => {
+    if (!badgePhotosZipFile) return;
+    setBadgePhotosUploading(true);
+    setError(null);
+    try {
+      const form = new FormData();
+      form.append('file', badgePhotosZipFile);
+      const { data } = await api.post('admin/special/templates/badge/photos/upload', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setBadgePhotosZipFile(null);
+      const imported = Number((data as { imported_files?: number; imported?: number })?.imported_files
+        ?? (data as { imported_files?: number; imported?: number })?.imported
+        ?? 0);
+      alert(`Фотографии успешно загружены: ${imported}.`);
+    } catch (err: unknown) {
+      const message =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Не удалось загрузить ZIP с фотографиями.';
+      setError(message);
+    } finally {
+      setBadgePhotosUploading(false);
     }
   };
 
@@ -926,7 +974,7 @@ const CompetitionsAdminPage: React.FC = () => {
                     )}
                     {comp.status === 'checking' && (
                       <Button
-                        variant="success"
+                        variant="primary"
                         className="btn-sm"
                         onClick={() => handleStatusChange(comp.id, 'publish')}
                       >
@@ -1256,6 +1304,8 @@ const CompetitionsAdminPage: React.FC = () => {
           setImportFile(null);
           setAnswerTemplateFile(null);
           setA3TemplateFile(null);
+          setBadgeTemplateFile(null);
+          setBadgePhotosZipFile(null);
         }}
         title={`Регистрации — ${regCompetition?.name || ''}`}
       >
@@ -1266,7 +1316,7 @@ const CompetitionsAdminPage: React.FC = () => {
             {/* Download badges button */}
             {regItems.length > 0 && (
               <div style={{ marginBottom: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <Button variant="secondary" onClick={handleDownloadBadges}>
+                <Button variant="secondary" onClick={handleDownloadBadges} loading={badgesDownloading}>
                   Скачать бейджи PDF
                 </Button>
                 <Button variant="secondary" onClick={handleOpenSeatingPlanPrint}>
@@ -1329,9 +1379,9 @@ const CompetitionsAdminPage: React.FC = () => {
 
                 <div style={{ borderTop: '1px solid var(--glass-border, #e2e8f0)', paddingTop: 12 }}>
                   <h4 style={{ marginBottom: 8 }}>Word-шаблоны бланков</h4>
-                  <p className="text-muted" style={{ fontSize: 12, marginBottom: 8 }}>
-                    Токены: {'{{QR_IMAGE}}'}, {'{{TOUR_NUMBER}}'}, {'{{TASK_NUMBER}}'}, {'{{TOUR_MODE}}'}, {'{{TOUR_TASK}}'}.
-                  </p>
+                <p className="text-muted" style={{ fontSize: 12, marginBottom: 8 }}>
+                    Токены бланков: {'{{QR_IMAGE}}'}, {'{{TOUR_NUMBER}}'}, {'{{TASK_NUMBER}}'}, {'{{TOUR_MODE}}'}, {'{{TOUR_TASK}}'}.
+                </p>
 
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12 }}>
                     <div>
@@ -1382,6 +1432,57 @@ const CompetitionsAdminPage: React.FC = () => {
                           disabled={!a3TemplateFile}
                         >
                           Загрузить
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="label" style={{ marginBottom: 4, display: 'block' }}>Шаблон бейджа</label>
+                      <p className="text-muted" style={{ fontSize: 12, marginBottom: 6 }}>
+                        Токены бейджа: {'{{QR_IMAGE}}'}, {'{{FIRST_NAME}}'}, {'{{LAST_NAME}}'}, {'{{MIDDLE_NAME}}'}, {'{{ROLE}}'}, {'{{PHOTO}}'}.
+                      </p>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <input
+                          type="file"
+                          accept=".docx"
+                          onChange={(e) => setBadgeTemplateFile(e.target.files?.[0] || null)}
+                          style={{ flex: 1, minWidth: 200 }}
+                        />
+                        <Button
+                          variant="secondary"
+                          onClick={() => handleDownloadTemplate('badge')}
+                          loading={templateDownloadingKind === 'badge'}
+                        >
+                          Скачать
+                        </Button>
+                        <Button
+                          onClick={() => handleUploadTemplate('badge', badgeTemplateFile)}
+                          loading={templateUploadingKind === 'badge'}
+                          disabled={!badgeTemplateFile}
+                        >
+                          Загрузить
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="label" style={{ marginBottom: 4, display: 'block' }}>Архив фото для бейджей</label>
+                      <p className="text-muted" style={{ fontSize: 12, marginBottom: 6 }}>
+                        Формат путей в ZIP: {'Город/Учреждение/Фамилия_Имя_Отчество.png'}.
+                      </p>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <input
+                          type="file"
+                          accept=".zip"
+                          onChange={(e) => setBadgePhotosZipFile(e.target.files?.[0] || null)}
+                          style={{ flex: 1, minWidth: 200 }}
+                        />
+                        <Button
+                          onClick={handleUploadBadgePhotosZip}
+                          loading={badgePhotosUploading}
+                          disabled={!badgePhotosZipFile}
+                        >
+                          Загрузить ZIP
                         </Button>
                       </div>
                     </div>
@@ -1477,4 +1578,3 @@ const CompetitionsAdminPage: React.FC = () => {
 };
 
 export default CompetitionsAdminPage;
-

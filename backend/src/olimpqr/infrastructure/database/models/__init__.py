@@ -14,6 +14,7 @@ from .seat_assignment import SeatAssignmentModel
 from .document import DocumentModel
 from .participant_event import ParticipantEventModel
 from .answer_sheet import AnswerSheetModel
+from .badge_photo import BadgePhotoModel
 
 __all__ = [
     "UserModel",
@@ -30,4 +31,5 @@ __all__ = [
     "DocumentModel",
     "ParticipantEventModel",
     "AnswerSheetModel",
+    "BadgePhotoModel",
 ]

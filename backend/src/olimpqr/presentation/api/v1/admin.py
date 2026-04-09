@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import selectinload
 
 from ....infrastructure.database import get_db
@@ -36,8 +36,8 @@ from ....infrastructure.security import hash_password
 from ....infrastructure.storage import MinIOStorage
 from ....infrastructure.pdf import SheetGenerator
 from ....infrastructure.docx import WordTemplateGenerator
-from ....domain.entities import User
-from ....domain.value_objects import UserRole
+from ....domain.entities import SeatAssignment, User
+from ....domain.value_objects import RegistrationStatus, UserRole
 from ....domain.services import TokenService
 from ....application.use_cases.admission import ApproveAdmissionUseCase
 from ....application.use_cases.registration.register_for_competition import (
@@ -66,33 +66,33 @@ _IMPORT_HEADER_ALIASES = {
     "full_name": {
         "full_name",
         "fio",
-        "С„РёРѕ",
+        "фио",
         "name",
         "participant_name",
         "participant",
     },
-    "email": {"email", "РїРѕС‡С‚Р°", "e-mail", "mail"},
+    "email": {"email", "почта", "e-mail", "mail"},
     "institution": {
         "institution",
         "institution_name",
         "school",
         "university",
-        "РІСѓР·",
-        "СѓС‡СЂРµР¶РґРµРЅРёРµ",
-        "СѓС‡РµР±РЅРѕРµ СѓС‡СЂРµР¶РґРµРЅРёРµ",
+        "вуз",
+        "учреждение",
+        "учебное учреждение",
     },
     "institution_location": {
         "institution_location",
         "location",
         "city",
         "campus",
-        "РјРµСЃС‚РѕРїРѕР»РѕР¶РµРЅРёРµ",
-        "РіРѕСЂРѕРґ",
-        "РјРµСЃС‚РѕРїРѕР»РѕР¶РµРЅРёРµ РІСѓР·Р°",
-        "РіРѕСЂРѕРґ РІСѓР·Р°",
+        "местоположение",
+        "город",
+        "местоположение вуза",
+        "город вуза",
     },
-    "is_captain": {"is_captain", "captain", "РєР°РїРёС‚Р°РЅ", "РєР°РїРёС‚Р°РЅ/РЅРµ РєР°РїРёС‚Р°РЅ"},
-    "dob": {"dob", "birth_date", "date_of_birth", "РґР°С‚Р° СЂРѕР¶РґРµРЅРёСЏ", "СЂРѕР¶РґРµРЅРёРµ"},
+    "is_captain": {"is_captain", "captain", "капитан", "капитан/не капитан"},
+    "dob": {"dob", "birth_date", "date_of_birth", "дата рождения", "рождение"},
 }
 
 
@@ -117,7 +117,7 @@ def _parse_bool(value: Any) -> bool:
     if value is None:
         return False
     normalized = str(value).strip().lower()
-    return normalized in {"1", "true", "yes", "y", "РґР°", "РєР°РїРёС‚Р°РЅ"}
+    return normalized in {"1", "true", "yes", "y", "да", "капитан"}
 
 
 def _parse_dob(value: Any):
@@ -131,13 +131,76 @@ def _parse_dob(value: Any):
             return datetime.strptime(text, fmt).date()
         except ValueError:
             continue
-    raise ValueError(f"РќРµ СѓРґР°Р»РѕСЃСЊ СЂР°СЃРїРѕР·РЅР°С‚СЊ РґР°С‚Сѓ СЂРѕР¶РґРµРЅРёСЏ: {value}")
+    raise ValueError(f"Не удалось распознать дату рождения: {value}")
 
 
 def _slugify_folder_name(value: str) -> str:
     safe = re.sub(r"[^\w\-. ]+", "_", value, flags=re.UNICODE).strip()
     safe = re.sub(r"\s+", "_", safe)
     return safe[:80] or "participant"
+
+
+def _split_full_name(full_name: str) -> tuple[str, str, str]:
+    parts = [part for part in re.split(r"\s+", (full_name or "").strip()) if part]
+    if not parts:
+        return "", "", ""
+    if len(parts) == 1:
+        return parts[0], "", ""
+    if len(parts) == 2:
+        return parts[0], parts[1], ""
+    return parts[0], parts[1], " ".join(parts[2:])
+
+
+def _build_badge_photo_lookup_keys(
+    city: str | None,
+    institution_name: str | None,
+    last_name: str,
+    first_name: str,
+    middle_name: str,
+) -> list[str]:
+    fio = "_".join(part for part in [last_name, first_name, middle_name] if part).strip("_")
+    if not fio:
+        return []
+    normalize = WordTemplateGenerator._normalize_photo_key  # type: ignore[attr-defined]
+    return [
+        normalize(f"{city or ''}/{institution_name or ''}/{fio}"),
+        normalize(f"{institution_name or ''}/{fio}"),
+        normalize(fio),
+    ]
+
+
+async def _load_badge_photo_index(db: AsyncSession) -> dict[str, bytes]:
+    from ....infrastructure.database.models import BadgePhotoModel
+
+    result = await db.execute(select(BadgePhotoModel.normalized_key, BadgePhotoModel.image_bytes))
+    index: dict[str, bytes] = {}
+    for row in result.all():
+        key = (row.normalized_key or "").strip().lower()
+        if not key:
+            continue
+        index[key] = row.image_bytes
+    return index
+
+
+def _find_badge_photo_bytes(
+    photo_index: dict[str, bytes],
+    city: str | None,
+    institution_name: str | None,
+    last_name: str,
+    first_name: str,
+    middle_name: str,
+) -> bytes | None:
+    keys = _build_badge_photo_lookup_keys(
+        city=city,
+        institution_name=institution_name,
+        last_name=last_name,
+        first_name=first_name,
+        middle_name=middle_name,
+    )
+    for key in keys:
+        if key in photo_index:
+            return photo_index[key]
+    return None
 
 
 def _parse_import_file(file_name: str, file_bytes: bytes) -> list[dict[str, Any]]:
@@ -148,7 +211,7 @@ def _parse_import_file(file_name: str, file_bytes: bytes) -> list[dict[str, Any]
         if isinstance(payload, dict):
             payload = payload.get("participants", [])
         if not isinstance(payload, list):
-            raise ValueError("JSON РґРѕР»Р¶РµРЅ Р±С‹С‚СЊ РјР°СЃСЃРёРІРѕРј СѓС‡Р°СЃС‚РЅРёРєРѕРІ РёР»Рё РѕР±СЉРµРєС‚РѕРј СЃ РєР»СЋС‡РѕРј participants")
+            raise ValueError("JSON должен быть массивом участников или объектом с ключом participants")
         return [_normalize_record(item) for item in payload if isinstance(item, dict)]
 
     if lower_name.endswith(".csv"):
@@ -160,7 +223,7 @@ def _parse_import_file(file_name: str, file_bytes: bytes) -> list[dict[str, Any]
             except UnicodeDecodeError:
                 continue
         if text is None:
-            raise ValueError("Р СњР Вµ РЎС“Р Т‘Р В°Р В»Р С•РЎРѓРЎРЉ Р Т‘Р ВµР С”Р С•Р Т‘Р С‘РЎР‚Р С•Р Р†Р В°РЎвЂљРЎРЉ CSV. Р ВРЎРѓР С—Р С•Р В»РЎРЉР В·РЎС“Р в„–РЎвЂљР Вµ UTF-8 Р С‘Р В»Р С‘ CP1251")
+            raise ValueError("Не удалось декодировать CSV. Используйте UTF-8 или CP1251")
 
         reader = csv.DictReader(io.StringIO(text))
         return [_normalize_record(row) for row in reader]
@@ -169,7 +232,7 @@ def _parse_import_file(file_name: str, file_bytes: bytes) -> list[dict[str, Any]
         try:
             from openpyxl import load_workbook
         except ImportError as exc:
-            raise ValueError("Р”Р»СЏ РёРјРїРѕСЂС‚Р° XLSX С‚СЂРµР±СѓРµС‚СЃСЏ Р·Р°РІРёСЃРёРјРѕСЃС‚СЊ openpyxl") from exc
+            raise ValueError("Для импорта XLSX требуется зависимость openpyxl") from exc
 
         wb = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
         ws = wb.active
@@ -185,7 +248,7 @@ def _parse_import_file(file_name: str, file_bytes: bytes) -> list[dict[str, Any]
             records.append(item)
         return records
 
-    raise ValueError("РџРѕРґРґРµСЂР¶РёРІР°СЋС‚СЃСЏ С‚РѕР»СЊРєРѕ С„Р°Р№Р»С‹ .json, .csv, .xlsx")
+    raise ValueError("Поддерживаются только файлы .json, .csv, .xlsx")
 
 
 def _extract_special_tours(competition) -> list[dict[str, Any]]:
@@ -326,7 +389,7 @@ def _resolve_special_tour_context(competition, tour_number: int | None) -> dict[
     else:
         selected = next((item for item in tours if int(item.get("tour_number", 0)) == tour_number), None)
         if not selected:
-            raise HTTPException(status_code=400, detail="РЈРєР°Р·Р°РЅ РЅРµСЃСѓС‰РµСЃС‚РІСѓСЋС‰РёР№ РЅРѕРјРµСЂ С‚СѓСЂР°")
+            raise HTTPException(status_code=400, detail="Указан несуществующий номер тура")
 
     mode = str(selected.get("mode") or "individual").strip()
     return {
@@ -590,6 +653,207 @@ def _project_team_seating_for_merges(
         table["occupied"] = any(bool(seat.get("occupied")) for seat in table.get("seats", []))
 
 
+async def _ensure_seat_assignments_for_competition(competition, db: AsyncSession) -> int:
+    """Auto-assign seats for active registrations missing seat assignment.
+
+    Used by seating-plan view to keep schema non-empty without heavy per-registration queries.
+    Rule for `individual` / `individual_captains`: participants from the same
+    institution are not placed in adjacent seats (left/right/front/back/diagonal)
+    when there is any valid non-conflicting seat.
+    """
+    from ....infrastructure.database.models import (
+        ParticipantModel,
+        RegistrationModel,
+        RoomModel,
+        SeatAssignmentModel,
+    )
+
+    rooms_result = await db.execute(
+        select(RoomModel)
+        .where(RoomModel.competition_id == competition.id)
+        .order_by(RoomModel.name.asc())
+    )
+    rooms = rooms_result.scalars().all()
+    if not rooms:
+        return 0
+
+    room_ids = [room.id for room in rooms]
+    rooms_by_id = {room.id: room for room in rooms}
+
+    existing_result = await db.execute(
+        select(
+            SeatAssignmentModel.room_id,
+            SeatAssignmentModel.seat_number,
+            ParticipantModel.institution_id,
+        )
+        .join(RegistrationModel, RegistrationModel.id == SeatAssignmentModel.registration_id)
+        .join(ParticipantModel, ParticipantModel.id == RegistrationModel.participant_id)
+        .where(SeatAssignmentModel.room_id.in_(room_ids))
+    )
+    taken_by_room: dict[UUID, set[int]] = {room.id: set() for room in rooms}
+    institution_seats_by_room: dict[UUID, dict[UUID, list[int]]] = {room.id: {} for room in rooms}
+    for row in existing_result:
+        taken_by_room[row.room_id].add(int(row.seat_number))
+        if row.institution_id:
+            room_map = institution_seats_by_room[row.room_id]
+            room_map.setdefault(row.institution_id, []).append(int(row.seat_number))
+
+    missing_result = await db.execute(
+        select(
+            RegistrationModel.id.label("registration_id"),
+            ParticipantModel.institution_id.label("institution_id"),
+            ParticipantModel.is_captain.label("is_captain"),
+        )
+        .join(ParticipantModel, ParticipantModel.id == RegistrationModel.participant_id)
+        .outerjoin(SeatAssignmentModel, SeatAssignmentModel.registration_id == RegistrationModel.id)
+        .where(RegistrationModel.competition_id == competition.id)
+        .where(RegistrationModel.status != RegistrationStatus.CANCELLED)
+        .where(SeatAssignmentModel.id.is_(None))
+        .order_by(RegistrationModel.created_at.asc())
+    )
+    missing_rows = missing_result.all()
+    if not missing_rows:
+        return 0
+
+    special_context = _resolve_special_tour_context(competition, tour_number=None)
+    tour_mode = str(special_context.get("mode")) if special_context else ""
+    is_captains_mode = tour_mode == "individual_captains"
+    apply_institution_distance_rule = tour_mode in {"individual", "individual_captains"}
+    is_team_mode = bool(special_context and special_context.get("is_team_mode"))
+    settings_payload = competition.special_settings or {}
+    captains_room_id: UUID | None = None
+    raw_captains_room_id = settings_payload.get("captains_room_id")
+    if is_captains_mode and raw_captains_room_id:
+        try:
+            parsed = UUID(str(raw_captains_room_id))
+            if parsed in rooms_by_id:
+                captains_room_id = parsed
+        except (TypeError, ValueError):
+            captains_room_id = None
+
+    room_priority_all = [room.id for room in rooms]
+    room_columns = {
+        room.id: _resolve_room_seat_matrix_columns(
+            competition=competition,
+            room_id=room.id,
+            is_team_mode=is_team_mode,
+        )
+        for room in rooms
+    }
+    room_seats_per_table = {
+        room.id: _resolve_room_seats_per_table(
+            competition=competition,
+            room_id=room.id,
+            is_team_mode=is_team_mode,
+        )
+        for room in rooms
+    }
+
+    def seat_grid_position(room_id: UUID, seat_number: int) -> tuple[int, int]:
+        cols = max(int(room_columns.get(room_id, 3)), 1)
+        row = (seat_number - 1) // cols
+        col = (seat_number - 1) % cols
+        return row, col
+
+    def same_institution_neighborhood_conflicts(room_id: UUID, seat_number: int, institution_id: UUID | None) -> int:
+        if not institution_id:
+            return 0
+        target_row, target_col = seat_grid_position(room_id, seat_number)
+        conflicts = 0
+        for occupied_seat in institution_seats_by_room[room_id].get(institution_id, []):
+            occ_row, occ_col = seat_grid_position(room_id, occupied_seat)
+            if abs(occ_row - target_row) <= 1 and abs(occ_col - target_col) <= 1:
+                conflicts += 1
+        return conflicts
+
+    def same_institution_table_conflicts(room_id: UUID, seat_number: int, institution_id: UUID | None) -> int:
+        if not institution_id:
+            return 0
+        seats_per_table = max(int(room_seats_per_table.get(room_id, 1)), 1)
+        target_table = (seat_number - 1) // seats_per_table
+        conflicts = 0
+        for occupied_seat in institution_seats_by_room[room_id].get(institution_id, []):
+            occupied_table = (occupied_seat - 1) // seats_per_table
+            if occupied_table == target_table:
+                conflicts += 1
+        return conflicts
+
+    def candidate_room_order(is_captain: bool) -> list[UUID]:
+        if not is_captains_mode or captains_room_id is None:
+            return room_priority_all
+        if is_captain:
+            return [captains_room_id] + [rid for rid in room_priority_all if rid != captains_room_id]
+        return [rid for rid in room_priority_all if rid != captains_room_id] + [captains_room_id]
+
+    seat_repo = SeatAssignmentRepositoryImpl(db)
+    variants_count = max(int(getattr(competition, "variants_count", 1) or 1), 1)
+    assigned_count = 0
+
+    for missing in missing_rows:
+        best_strict: tuple[tuple[int, int, int, int], UUID, int] | None = None
+        best_relaxed: tuple[tuple[int, int, int, int], UUID, int] | None = None
+
+        for room_priority_index, room_id in enumerate(candidate_room_order(bool(missing.is_captain))):
+            room = rooms_by_id[room_id]
+            taken = taken_by_room[room_id]
+            for seat_number in range(1, room.capacity + 1):
+                if seat_number in taken:
+                    continue
+
+                neighborhood_conflicts = (
+                    same_institution_neighborhood_conflicts(room_id, seat_number, missing.institution_id)
+                    if apply_institution_distance_rule
+                    else 0
+                )
+                table_conflicts = (
+                    same_institution_table_conflicts(room_id, seat_number, missing.institution_id)
+                    if apply_institution_distance_rule
+                    else 0
+                )
+                same_inst_in_room = (
+                    len(institution_seats_by_room[room_id].get(missing.institution_id, []))
+                    if missing.institution_id
+                    else 0
+                )
+
+                score = (same_inst_in_room, room_priority_index, len(taken), seat_number)
+                if neighborhood_conflicts == 0 and table_conflicts == 0:
+                    candidate = (score, room_id, seat_number)
+                    if best_strict is None or candidate[0] < best_strict[0]:
+                        best_strict = candidate
+                else:
+                    relaxed_score = (
+                        neighborhood_conflicts + table_conflicts,
+                        same_inst_in_room,
+                        room_priority_index,
+                        seat_number,
+                    )
+                    candidate = (relaxed_score, room_id, seat_number)
+                    if best_relaxed is None or candidate[0] < best_relaxed[0]:
+                        best_relaxed = candidate
+
+        selected = best_strict or best_relaxed
+        if selected is None:
+            continue
+        _, chosen_room_id, chosen_seat_number = selected
+
+        variant_number = (chosen_seat_number % variants_count) + 1
+        await seat_repo.create(
+            SeatAssignment(
+                registration_id=missing.registration_id,
+                room_id=chosen_room_id,
+                seat_number=chosen_seat_number,
+                variant_number=variant_number,
+            )
+        )
+        taken_by_room[chosen_room_id].add(chosen_seat_number)
+        if missing.institution_id:
+            institution_seats_by_room[chosen_room_id].setdefault(missing.institution_id, []).append(chosen_seat_number)
+        assigned_count += 1
+
+    return assigned_count
+
+
 # --- User Management ---
 
 @router.get("/users", response_model=UserListResponse)
@@ -631,14 +895,14 @@ async def create_staff_user(
     user_repo = UserRepositoryImpl(db)
 
     if await user_repo.exists_by_email(body.email):
-        raise HTTPException(status_code=400, detail="Email СѓР¶Рµ РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ")
+        raise HTTPException(status_code=400, detail="Email уже используется")
 
     # Validate participant-specific fields
     if body.role == UserRole.PARTICIPANT:
         if not body.full_name or len(body.full_name.strip()) < 2:
-            raise HTTPException(status_code=400, detail="Р В¤Р ВР С› Р С•Р В±РЎРЏР В·Р В°РЎвЂљР ВµР В»РЎРЉР Р…Р С• Р Т‘Р В»РЎРЏ РЎС“РЎвЂЎР В°РЎРѓРЎвЂљР Р…Р С‘Р С”Р С•Р Р† (Р СР С‘Р Р…Р С‘Р СРЎС“Р С 2 РЎРѓР С‘Р СР Р†Р С•Р В»Р В°)")
+            raise HTTPException(status_code=400, detail="ФИО обязательно для участников (минимум 2 символа)")
         if not body.school or len(body.school.strip()) < 2:
-            raise HTTPException(status_code=400, detail="РЈС‡РµР±РЅРѕРµ СѓС‡СЂРµР¶РґРµРЅРёРµ РѕР±СЏР·Р°С‚РµР»СЊРЅРѕ РґР»СЏ СѓС‡Р°СЃС‚РЅРёРєРѕРІ (РјРёРЅРёРјСѓРј 2 СЃРёРјРІРѕР»Р°)")
+            raise HTTPException(status_code=400, detail="Учебное учреждение обязательно для участников (минимум 2 символа)")
 
     from uuid import uuid4
 
@@ -688,7 +952,7 @@ async def update_user(
     user_repo = UserRepositoryImpl(db)
     user = await user_repo.get_by_id(user_id)
     if not user:
-        raise HTTPException(status_code=404, detail="РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ")
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
 
     if body.is_active is not None:
         if body.is_active:
@@ -720,10 +984,10 @@ async def deactivate_user(
     user_repo = UserRepositoryImpl(db)
     user = await user_repo.get_by_id(user_id)
     if not user:
-        raise HTTPException(status_code=404, detail="РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ")
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
 
     if user.id == current_user.id:
-        raise HTTPException(status_code=400, detail="РќРµР»СЊР·СЏ РґРµР°РєС‚РёРІРёСЂРѕРІР°С‚СЊ СЃРµР±СЏ")
+        raise HTTPException(status_code=400, detail="Нельзя деактивировать себя")
 
     user.deactivate()
     await user_repo.update(user)
@@ -928,8 +1192,8 @@ async def list_competition_registrations(
             AdminRegistrationItem(
                 registration_id=reg.id,
                 participant_id=reg.participant_id,
-                participant_name=participant.full_name if participant else "вЂ”",
-                participant_school=participant.school if participant else "вЂ”",
+                participant_name=participant.full_name if participant else "—",
+                participant_school=participant.school if participant else "—",
                 participant_institution_location=participant.institution_location if participant else None,
                 participant_is_captain=participant.is_captain if participant else False,
                 institution_name=institution_name,
@@ -947,24 +1211,25 @@ async def download_badges_pdf(
     current_user: User = Depends(require_role(UserRole.ADMIN)),
     db: AsyncSession = Depends(get_db),
 ):
-    """Download a PDF with QR badges for all registrations, grouped by institution."""
+    """Download template-based badge PDF grouped by institution."""
     from ....infrastructure.database.models import (
         RegistrationModel,
         CompetitionModel,
+        ParticipantModel,
     )
-    from ....infrastructure.pdf.badge_generator import BadgeGenerator, BadgeData
+    from ....infrastructure.pdf.badge_template_pdf_generator import (
+        BadgeTemplatePdfGenerator,
+        TemplateBadgePdfItem,
+    )
     from io import BytesIO
 
-    # Get competition name
     comp_result = await db.execute(
         select(CompetitionModel).where(CompetitionModel.id == competition_id)
     )
     competition = comp_result.scalar_one_or_none()
     if not competition:
-        raise HTTPException(status_code=404, detail="РћР»РёРјРїРёР°РґР° РЅРµ РЅР°Р№РґРµРЅР°")
+        raise HTTPException(status_code=404, detail="Олимпиада не найдена")
 
-    # Get registrations
-    from ....infrastructure.database.models import ParticipantModel
     stmt = (
         select(RegistrationModel)
         .where(RegistrationModel.competition_id == competition_id)
@@ -977,7 +1242,15 @@ async def download_badges_pdf(
     result = await db.execute(stmt)
     registrations = result.scalars().all()
 
-    badges: list[BadgeData] = []
+    word_generator = WordTemplateGenerator()
+    if not word_generator.is_docx_to_pdf_available():
+        raise HTTPException(
+            status_code=500,
+            detail="Для генерации PDF бейджей из DOCX-шаблона требуется LibreOffice (soffice).",
+        )
+    photo_index = await _load_badge_photo_index(db)
+
+    prepared: list[dict[str, Any]] = []
     for reg in registrations:
         participant = reg.participant
         if not participant:
@@ -986,34 +1259,171 @@ async def download_badges_pdf(
         entry_token_raw = None
         if reg.entry_token and reg.entry_token.raw_token:
             entry_token_raw = reg.entry_token.raw_token
-
         if not entry_token_raw:
             continue
 
         institution_name = ""
         if participant.institution:
-            institution_name = participant.institution.name
+            institution_name = participant.institution.name or ""
 
-        badges.append(
-            BadgeData(
-                name=participant.full_name,
-                school=participant.school,
-                institution=institution_name,
-                qr_token=entry_token_raw,
+        last_name, first_name, middle_name = _split_full_name(participant.full_name)
+        photo_bytes = _find_badge_photo_bytes(
+            photo_index=photo_index,
+            city=participant.institution_location,
+            institution_name=institution_name,
+            last_name=last_name,
+            first_name=first_name,
+            middle_name=middle_name,
+        )
+
+        prepared.append(
+            {
+                "institution": institution_name,
+                "full_name": participant.full_name,
+                "docx": word_generator.generate_badge_docx(
+                    qr_payload=entry_token_raw,
+                    first_name=first_name,
+                    last_name=last_name,
+                    middle_name=middle_name,
+                    role="УЧАСТНИК",
+                    participant_school=participant.school,
+                    institution_name=institution_name,
+                    competition_name=competition.name,
+                    photo_bytes=photo_bytes,
+                ),
+            }
+        )
+
+    prepared.sort(key=lambda item: (item["institution"] or "", item["full_name"] or ""))
+    if not prepared:
+        raise HTTPException(status_code=400, detail="Нет зарегистрированных участников для генерации бейджей")
+
+    docx_files: dict[str, bytes] = {}
+    name_to_institution: dict[str, str] = {}
+    for index, item in enumerate(prepared, start=1):
+        file_name = f"badge_{index:04d}.docx"
+        docx_files[file_name] = item["docx"]
+        name_to_institution[file_name] = item["institution"]
+
+    try:
+        converted_pdf = word_generator.convert_docx_files_to_pdf(docx_files)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=f"Не удалось конвертировать бейджи в PDF: {exc}") from exc
+    template_items: list[TemplateBadgePdfItem] = []
+    for file_name in docx_files:
+        template_items.append(
+            TemplateBadgePdfItem(
+                institution=name_to_institution[file_name],
+                pdf_bytes=converted_pdf[file_name],
             )
         )
 
-    # Sort by institution then name
-    badges.sort(key=lambda b: (b.institution or "", b.name))
-
-    generator = BadgeGenerator()
-    pdf_bytes = generator.generate_badges_pdf(competition.name, badges)
+    generator = BadgeTemplatePdfGenerator()
+    pdf_bytes = generator.generate_grouped_pdf(competition.name, template_items)
 
     return StreamingResponse(
         BytesIO(pdf_bytes),
         media_type="application/pdf",
         headers={
             "Content-Disposition": f'attachment; filename="badges_{competition_id}.pdf"'
+        },
+    )
+
+@router.get("/registrations/{competition_id}/badges-docx")
+async def download_badges_docx(
+    competition_id: UUID,
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Download badge DOCX files generated from editable Word template."""
+    from ....infrastructure.database.models import (
+        RegistrationModel,
+        CompetitionModel,
+        ParticipantModel,
+    )
+    from io import BytesIO
+
+    comp_result = await db.execute(
+        select(CompetitionModel).where(CompetitionModel.id == competition_id)
+    )
+    competition = comp_result.scalar_one_or_none()
+    if not competition:
+        raise HTTPException(status_code=404, detail="Олимпиада не найдена")
+
+    stmt = (
+        select(RegistrationModel)
+        .where(RegistrationModel.competition_id == competition_id)
+        .options(
+            selectinload(RegistrationModel.entry_token),
+            selectinload(RegistrationModel.participant).selectinload(ParticipantModel.institution),
+        )
+        .order_by(RegistrationModel.created_at)
+    )
+    result = await db.execute(stmt)
+    registrations = result.scalars().all()
+
+    word_generator = WordTemplateGenerator()
+    template_paths = word_generator.get_template_paths()
+    photo_index = await _load_badge_photo_index(db)
+    zip_buffer = io.BytesIO()
+    index = 1
+
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        try:
+            zf.write(template_paths["badge"], arcname="_templates/badge_template.docx")
+        except Exception:  # noqa: BLE001
+            pass
+
+        for reg in registrations:
+            participant = reg.participant
+            if not participant:
+                continue
+
+            entry_token_raw = None
+            if reg.entry_token and reg.entry_token.raw_token:
+                entry_token_raw = reg.entry_token.raw_token
+            if not entry_token_raw:
+                continue
+
+            institution_name = ""
+            if participant.institution:
+                institution_name = participant.institution.name or ""
+
+            last_name, first_name, middle_name = _split_full_name(participant.full_name)
+            photo_bytes = _find_badge_photo_bytes(
+                photo_index=photo_index,
+                city=participant.institution_location,
+                institution_name=institution_name,
+                last_name=last_name,
+                first_name=first_name,
+                middle_name=middle_name,
+            )
+            badge_docx = word_generator.generate_badge_docx(
+                qr_payload=entry_token_raw,
+                first_name=first_name,
+                last_name=last_name,
+                middle_name=middle_name,
+                role="УЧАСТНИК",
+                participant_school=participant.school,
+                institution_name=institution_name,
+                competition_name=competition.name,
+                photo_bytes=photo_bytes,
+            )
+
+            institution_slug = _slugify_folder_name(institution_name or "without_institution")
+            participant_slug = _slugify_folder_name(participant.full_name)
+            if not participant_slug:
+                participant_slug = str(participant.id)
+            filename = f"{institution_slug}/{index:03d}_{participant_slug}.docx"
+            zf.writestr(filename, badge_docx)
+            index += 1
+
+    zip_buffer.seek(0)
+    return StreamingResponse(
+        BytesIO(zip_buffer.getvalue()),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="badges_{competition_id}_docx.zip"'
         },
     )
 
@@ -1040,7 +1450,9 @@ async def get_seating_plan(
     )
     competition = competition_result.scalar_one_or_none()
     if not competition:
-        raise HTTPException(status_code=404, detail="РћР»РёРјРїРёР°РґР° РЅРµ РЅР°Р№РґРµРЅР°")
+        raise HTTPException(status_code=404, detail="Олимпиада не найдена")
+
+    await _ensure_seat_assignments_for_competition(competition=competition, db=db)
 
     default_seat_matrix_columns = _resolve_default_seat_matrix_columns(competition)
     special_tour_context = _resolve_special_tour_context(competition, tour_number=tour_number)
@@ -1461,6 +1873,7 @@ async def get_special_templates_info(
         "templates": [
             {"kind": "answer_blank", "path": paths["answer_blank"]},
             {"kind": "a3_cover", "path": paths["a3_cover"]},
+            {"kind": "badge", "path": paths["badge"]},
         ]
     }
 
@@ -1475,14 +1888,14 @@ async def download_special_template(
     paths = generator.get_template_paths()
 
     if template_kind not in paths:
-        raise HTTPException(status_code=404, detail="РќРµРёР·РІРµСЃС‚РЅС‹Р№ С‚РёРї С€Р°Р±Р»РѕРЅР°")
+        raise HTTPException(status_code=404, detail="Неизвестный тип шаблона")
 
     path = paths[template_kind]
     try:
         with open(path, "rb") as f:
             content = f.read()
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"РќРµ СѓРґР°Р»РѕСЃСЊ РѕС‚РєСЂС‹С‚СЊ С€Р°Р±Р»РѕРЅ: {exc}")
+        raise HTTPException(status_code=500, detail=f"Не удалось открыть шаблон: {exc}")
 
     filename = Path(path).name
     return Response(
@@ -1503,22 +1916,99 @@ async def upload_special_template(
     paths = generator.get_template_paths()
 
     if template_kind not in paths:
-        raise HTTPException(status_code=404, detail="РќРµРёР·РІРµСЃС‚РЅС‹Р№ С‚РёРї С€Р°Р±Р»РѕРЅР°")
+        raise HTTPException(status_code=404, detail="Неизвестный тип шаблона")
     if not (file.filename or "").lower().endswith(".docx"):
-        raise HTTPException(status_code=400, detail="РќСѓР¶РµРЅ С„Р°Р№Р» .docx")
+        raise HTTPException(status_code=400, detail="Нужен файл .docx")
 
     content = await file.read()
     if not content:
-        raise HTTPException(status_code=400, detail="Р¤Р°Р№Р» РїСѓСЃС‚РѕР№")
+        raise HTTPException(status_code=400, detail="Файл пустой")
 
     path = paths[template_kind]
     try:
         with open(path, "wb") as f:
             f.write(content)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"РќРµ СѓРґР°Р»РѕСЃСЊ СЃРѕС…СЂР°РЅРёС‚СЊ С€Р°Р±Р»РѕРЅ: {exc}")
+        raise HTTPException(status_code=500, detail=f"Не удалось сохранить шаблон: {exc}")
 
     return {"status": "ok", "template_kind": template_kind, "path": path}
+
+
+@router.post("/special/templates/badge/photos/upload")
+async def upload_badge_photos_zip(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload ZIP archive with participant photos for badge template token {{PHOTO}}."""
+    from ....infrastructure.database.models import BadgePhotoModel
+
+    if not (file.filename or "").lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Нужен ZIP-архив с фотографиями")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Файл пустой")
+
+    content_type_by_ext = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+    }
+    records: dict[str, tuple[str, bytes, str]] = {}
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            for info in zf.infolist():
+                if info.is_dir():
+                    continue
+                ext = Path(info.filename).suffix.lower()
+                if ext not in content_type_by_ext:
+                    continue
+
+                raw_path = str(info.filename).replace("\\", "/")
+                raw_parts = [part for part in raw_path.split("/") if part]
+                if not raw_parts or any(part == ".." for part in raw_parts):
+                    continue
+
+                normalized_key = WordTemplateGenerator._normalize_photo_key(  # type: ignore[attr-defined]
+                    str(Path(raw_path).with_suffix("")).replace("\\", "/")
+                )
+                if not normalized_key:
+                    continue
+
+                image_bytes = zf.read(info)
+                if not image_bytes:
+                    continue
+
+                records[normalized_key] = (
+                    raw_path,
+                    image_bytes,
+                    content_type_by_ext[ext],
+                )
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="Некорректный ZIP-архив")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Не удалось обработать архив фотографий: {exc}")
+
+    await db.execute(delete(BadgePhotoModel))
+    for normalized_key, (original_path, image_bytes, content_type) in records.items():
+        db.add(
+            BadgePhotoModel(
+                normalized_key=normalized_key,
+                original_path=original_path,
+                content_type=content_type,
+                image_bytes=image_bytes,
+            )
+        )
+    imported = len(records)
+
+    return {
+        "status": "ok",
+        "imported_files": imported,
+        "imported": imported,
+        "path_hint": "Город/Учреждение/Фамилия_Имя_Отчество.png",
+    }
 
 
 @router.post("/competitions/{competition_id}/special/import-participants")
@@ -1533,14 +2023,14 @@ async def import_special_participants(
     competition_repo = CompetitionRepositoryImpl(db)
     competition = await competition_repo.get_by_id(competition_id)
     if not competition:
-        raise HTTPException(status_code=404, detail="РћР»РёРјРїРёР°РґР° РЅРµ РЅР°Р№РґРµРЅР°")
+        raise HTTPException(status_code=404, detail="Олимпиада не найдена")
     if not competition.is_special:
-        raise HTTPException(status_code=400, detail="Р ВР СР С—Р С•РЎР‚РЎвЂљ Р Т‘Р С•РЎРѓРЎвЂљРЎС“Р С—Р ВµР Р… РЎвЂљР С•Р В»РЎРЉР С”Р С• Р Т‘Р В»РЎРЏ Р С•Р В»Р С‘Р СР С—Р С‘Р В°Р Т‘ РЎРѓ Р С—Р С•Р СР ВµРЎвЂљР С”Р С•Р в„– 'Р С•РЎРѓР С•Р В±Р В°РЎРЏ'")
+        raise HTTPException(status_code=400, detail="Импорт доступен только для олимпиад с пометкой 'особая'")
 
     file_name = file.filename or ""
     file_bytes = await file.read()
     if not file_bytes:
-        raise HTTPException(status_code=400, detail="Р¤Р°Р№Р» РїСѓСЃС‚РѕР№")
+        raise HTTPException(status_code=400, detail="Файл пустой")
 
     try:
         rows = _parse_import_file(file_name, file_bytes)
@@ -1588,9 +2078,9 @@ async def import_special_participants(
             institution_name = str(normalized.get("institution") or "").strip()
 
             if len(full_name) < 2:
-                raise ValueError("Р СџР С•Р В»Р Вµ Р В¤Р ВР С› Р С•Р В±РЎРЏР В·Р В°РЎвЂљР ВµР В»РЎРЉР Р…Р С•")
+                raise ValueError("Поле ФИО обязательно")
             if len(institution_name) < 2:
-                raise ValueError("РџРѕР»Рµ Р’РЈР—/СѓС‡СЂРµР¶РґРµРЅРёРµ РѕР±СЏР·Р°С‚РµР»СЊРЅРѕ")
+                raise ValueError("Поле ВУЗ/учреждение обязательно")
 
             email = str(normalized.get("email") or "").strip().lower()
             if not email:
@@ -1631,7 +2121,7 @@ async def import_special_participants(
                 )
                 summary["created_users"] += 1
             elif user.role != UserRole.PARTICIPANT:
-                raise ValueError(f"Email {email} СѓР¶Рµ Р·Р°РЅСЏС‚ РїРѕР»СЊР·РѕРІР°С‚РµР»РµРј СЃ СЂРѕР»СЊСЋ {user.role.value}")
+                raise ValueError(f"Email {email} уже занят пользователем с ролью {user.role.value}")
 
             participant = await participant_repo.get_by_user_id(user.id)
             if participant is None:
@@ -1669,7 +2159,7 @@ async def import_special_participants(
                     )
                     summary["registered_to_competition"] += 1
                 except ValueError as exc:
-                    if "СѓР¶Рµ Р·Р°СЂРµРіРёСЃС‚СЂРёСЂРѕРІР°РЅС‹" in str(exc):
+                    if "уже зарегистрированы" in str(exc):
                         summary["skipped"] += 1
                     else:
                         raise
@@ -1691,9 +2181,9 @@ async def admit_all_special_and_download(
     competition_repo = CompetitionRepositoryImpl(db)
     competition = await competition_repo.get_by_id(competition_id)
     if not competition:
-        raise HTTPException(status_code=404, detail="РћР»РёРјРїРёР°РґР° РЅРµ РЅР°Р№РґРµРЅР°")
+        raise HTTPException(status_code=404, detail="Олимпиада не найдена")
     if not competition.is_special:
-        raise HTTPException(status_code=400, detail="РћРїРµСЂР°С†РёСЏ РґРѕСЃС‚СѓРїРЅР° С‚РѕР»СЊРєРѕ РґР»СЏ РѕР»РёРјРїРёР°Рґ СЃ РїРѕРјРµС‚РєРѕР№ 'РѕСЃРѕР±Р°СЏ'")
+        raise HTTPException(status_code=400, detail="Операция доступна только для олимпиад с пометкой 'особая'")
 
     from ....infrastructure.database.models import (
         RegistrationModel,
@@ -1739,8 +2229,8 @@ async def admit_all_special_and_download(
             admit_errors.append(
                 {
                     "registration_id": str(reg.id),
-                    "participant": reg.participant.full_name if reg.participant else "вЂ”",
-                    "error": "РЈ СЂРµРіРёСЃС‚СЂР°С†РёРё РѕС‚СЃСѓС‚СЃС‚РІСѓРµС‚ raw entry token",
+                    "participant": reg.participant.full_name if reg.participant else "—",
+                    "error": "У регистрации отсутствует raw entry token",
                 }
             )
             continue
@@ -1757,7 +2247,7 @@ async def admit_all_special_and_download(
             admit_errors.append(
                 {
                     "registration_id": str(reg.id),
-                    "participant": reg.participant.full_name if reg.participant else "вЂ”",
+                    "participant": reg.participant.full_name if reg.participant else "—",
                     "error": str(exc),
                 }
             )
@@ -1774,9 +2264,9 @@ async def admit_all_special_and_download(
     zip_buffer = io.BytesIO()
     added_files = 0
     mode_labels = {
-        "individual": "Р ВР Р…Р Т‘Р С‘Р Р†Р С‘Р Т‘РЎС“Р В°Р В»РЎРЉР Р…РЎвЂ№Р в„–",
-        "individual_captains": "Р ВР Р…Р Т‘Р С‘Р Р†Р С‘Р Т‘РЎС“Р В°Р В»РЎРЉР Р…РЎвЂ№Р в„– (Р С”Р В°Р С—Р С‘РЎвЂљР В°Р Р…РЎвЂ№)",
-        "team": "РљРѕРјР°РЅРґРЅС‹Р№",
+        "individual": "Индивидуальный",
+        "individual_captains": "Индивидуальный (капитаны)",
+        "team": "Командный",
     }
 
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -1889,4 +2379,3 @@ async def admit_all_special_and_download(
         "X-Admit-Errors": json.dumps(admit_errors),
     }
     return StreamingResponse(zip_buffer, media_type="application/zip", headers=headers)
-

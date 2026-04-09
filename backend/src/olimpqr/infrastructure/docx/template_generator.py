@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import io
+import re
+import shutil
+import subprocess
+import tempfile
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 from docx import Document
 from docx.shared import Mm, Pt
+from PIL import Image, ImageOps
 
 from ...config import settings
 from ...domain.services import QRService
@@ -28,6 +34,11 @@ class WordTemplateGenerator:
 
     ANSWER_TEMPLATE_NAME = "special_answer_blank_template.docx"
     A3_COVER_TEMPLATE_NAME = "special_cover_a3_template.docx"
+    BADGE_TEMPLATE_NAME = "badge_template.docx"
+    BADGE_PHOTOS_DIR_NAME = "badge_photos"
+    BADGE_PHOTO_DPI = 220
+    DOCX_TO_PDF_BATCH_SIZE = 40
+    DOCX_TO_PDF_TIMEOUT_SEC = 120
 
     def __init__(self, templates_dir: str | None = None):
         base_path = (
@@ -38,7 +49,10 @@ class WordTemplateGenerator:
         self.templates_dir = base_path
         self.answer_template_path = self.templates_dir / self.ANSWER_TEMPLATE_NAME
         self.a3_cover_template_path = self.templates_dir / self.A3_COVER_TEMPLATE_NAME
+        self.badge_template_path = self.templates_dir / self.BADGE_TEMPLATE_NAME
+        self.badge_photos_dir = self.templates_dir / self.BADGE_PHOTOS_DIR_NAME
         self.qr_service = QRService()
+        self._badge_photo_index: dict[str, Path] | None = None
 
     def ensure_templates_exist(self) -> None:
         """Create default templates if missing."""
@@ -47,12 +61,16 @@ class WordTemplateGenerator:
             self._create_default_answer_template(self.answer_template_path)
         if not self.a3_cover_template_path.exists():
             self._create_default_a3_cover_template(self.a3_cover_template_path)
+        if not self.badge_template_path.exists():
+            self._create_default_badge_template(self.badge_template_path)
+        self.badge_photos_dir.mkdir(parents=True, exist_ok=True)
 
     def get_template_paths(self) -> dict[str, str]:
         self.ensure_templates_exist()
         return {
             "answer_blank": str(self.answer_template_path),
             "a3_cover": str(self.a3_cover_template_path),
+            "badge": str(self.badge_template_path),
         }
 
     def generate_answer_blank(
@@ -77,7 +95,7 @@ class WordTemplateGenerator:
         )
         qr_bytes = self._build_qr_png(qr_payload)
         # QR in answer blank must not exceed 3 cm (30 mm) in width/height.
-        self._replace_qr_token(doc, "{{QR_IMAGE}}", qr_bytes, width_mm=28)
+        self._replace_image_token(doc, "{{QR_IMAGE}}", qr_bytes, width_mm=23)
         return self._save_doc_to_bytes(doc)
 
     def generate_a3_cover(
@@ -97,8 +115,228 @@ class WordTemplateGenerator:
             },
         )
         qr_bytes = self._build_qr_png(qr_payload)
-        self._replace_qr_token(doc, "{{QR_IMAGE}}", qr_bytes, width_mm=28)
+        self._replace_image_token(doc, "{{QR_IMAGE}}", qr_bytes, width_mm=28)
         return self._save_doc_to_bytes(doc)
+
+    def generate_badge_docx(
+        self,
+        qr_payload: str,
+        first_name: str,
+        last_name: str,
+        middle_name: str,
+        role: str,
+        participant_school: str,
+        institution_name: str,
+        competition_name: str,
+        photo_bytes: bytes | None = None,
+    ) -> bytes:
+        """Render badge DOCX from editable template."""
+        self.ensure_templates_exist()
+        doc = Document(str(self.badge_template_path))
+        participant_name = " ".join(
+            part for part in [last_name, first_name, middle_name] if part
+        ).strip()
+        self._replace_text_tokens(
+            doc,
+            {
+                "{{FIRST_NAME}}": first_name or "",
+                "{{LAST_NAME}}": last_name or "",
+                "{{MIDDLE_NAME}}": middle_name or "",
+                "{{ROLE}}": role or "",
+                "{{PARTICIPANT_NAME}}": participant_name or "",
+                "{{PARTICIPANT_SCHOOL}}": participant_school or "",
+                "{{INSTITUTION_NAME}}": institution_name or "",
+                "{{COMPETITION_NAME}}": competition_name or "",
+            },
+        )
+        qr_bytes = self._build_qr_png(qr_payload)
+        self._replace_image_token(doc, "{{QR_IMAGE}}", qr_bytes, width_mm=20, height_mm=20)
+        optimized_photo_bytes = self._prepare_badge_photo(
+            photo_bytes=photo_bytes,
+            width_mm=30,
+            height_mm=40,
+        )
+        self._replace_image_token(doc, "{{PHOTO}}", optimized_photo_bytes, width_mm=30, height_mm=40)
+        return self._save_doc_to_bytes(doc)
+
+    def import_badge_photos_zip(self, zip_bytes: bytes) -> int:
+        """Replace badge photos directory from a ZIP archive."""
+        self.ensure_templates_exist()
+        if self.badge_photos_dir.exists():
+            shutil.rmtree(self.badge_photos_dir)
+        self.badge_photos_dir.mkdir(parents=True, exist_ok=True)
+
+        imported = 0
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            for info in zf.infolist():
+                if info.is_dir():
+                    continue
+                ext = Path(info.filename).suffix.lower()
+                if ext not in {".png", ".jpg", ".jpeg", ".webp"}:
+                    continue
+                relative = Path(info.filename)
+                target = (self.badge_photos_dir / relative).resolve()
+                if self.badge_photos_dir.resolve() not in target.parents and target != self.badge_photos_dir.resolve():
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(zf.read(info))
+                imported += 1
+
+        self._badge_photo_index = None
+        return imported
+
+    def find_badge_photo(
+        self,
+        city: str | None,
+        institution_name: str | None,
+        last_name: str,
+        first_name: str,
+        middle_name: str,
+    ) -> bytes | None:
+        """Find participant photo by city/institution/FIO path convention."""
+        self.ensure_templates_exist()
+        index = self._get_badge_photo_index()
+        fio = "_".join(part for part in [last_name, first_name, middle_name] if part).strip("_")
+        if not fio:
+            return None
+
+        keys = [
+            self._normalize_photo_key(f"{city or ''}/{institution_name or ''}/{fio}"),
+            self._normalize_photo_key(f"{institution_name or ''}/{fio}"),
+            self._normalize_photo_key(fio),
+        ]
+
+        for key in keys:
+            path = index.get(key)
+            if path and path.exists():
+                try:
+                    return path.read_bytes()
+                except Exception:  # noqa: BLE001
+                    continue
+        return None
+
+    @staticmethod
+    def is_docx_to_pdf_available() -> bool:
+        return shutil.which("soffice") is not None
+
+    def convert_docx_files_to_pdf(self, files: dict[str, bytes]) -> dict[str, bytes]:
+        """Convert DOCX files to PDF with batching for better stability/performance."""
+        if not files:
+            return {}
+        soffice = shutil.which("soffice")
+        if not soffice:
+            raise RuntimeError("LibreOffice (soffice) is not installed")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            result: dict[str, bytes] = {}
+            used_safe_names: set[str] = set()
+            mapped_files: list[tuple[str, str, bytes]] = []
+            for name, content in files.items():
+                safe_name = self._build_unique_safe_docx_name(name=name, used=used_safe_names)
+                mapped_files.append((name, safe_name, content))
+
+            user_profile = tmp_path / "lo_profile"
+            user_profile.mkdir(parents=True, exist_ok=True)
+
+            batch_size = max(1, self.DOCX_TO_PDF_BATCH_SIZE)
+            for start in range(0, len(mapped_files), batch_size):
+                batch = mapped_files[start : start + batch_size]
+                docx_paths: list[str] = []
+                for _, safe_name, content in batch:
+                    file_path = tmp_path / safe_name
+                    file_path.write_bytes(content)
+                    docx_paths.append(str(file_path))
+
+                command = [
+                    soffice,
+                    "--headless",
+                    "--norestore",
+                    "--nolockcheck",
+                    "--nodefault",
+                    "--nofirststartwizard",
+                    f"-env:UserInstallation=file://{user_profile.as_posix()}",
+                    "--convert-to",
+                    "pdf:writer_pdf_Export",
+                    "--outdir",
+                    str(tmp_path),
+                    *docx_paths,
+                ]
+                try:
+                    subprocess.run(
+                        command,
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=self.DOCX_TO_PDF_TIMEOUT_SEC,
+                    )
+                except subprocess.CalledProcessError as exc:  # noqa: PERF203
+                    stderr = (exc.stderr or "").strip()
+                    stdout = (exc.stdout or "").strip()
+                    raise RuntimeError(
+                        f"DOCX->PDF conversion failed: {stderr or stdout or 'unknown error'}"
+                    ) from exc
+                except subprocess.TimeoutExpired as exc:
+                    raise RuntimeError(
+                        f"DOCX->PDF conversion timeout ({self.DOCX_TO_PDF_TIMEOUT_SEC}s) on batch starting with {batch[0][1]}"
+                    ) from exc
+
+                for original_name, safe_name, _ in batch:
+                    pdf_path = (tmp_path / safe_name).with_suffix(".pdf")
+                    if not pdf_path.exists():
+                        raise RuntimeError(f"Converted PDF not found for {original_name}")
+                    result[original_name] = pdf_path.read_bytes()
+                    # Cleanup per-batch intermediates to keep temp dir small.
+                    try:
+                        (tmp_path / safe_name).unlink(missing_ok=True)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
+                        pdf_path.unlink(missing_ok=True)
+                    except Exception:  # noqa: BLE001
+                        pass
+            return result
+
+    @staticmethod
+    def _build_unique_safe_docx_name(name: str, used: set[str]) -> str:
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", name)
+        if not safe.lower().endswith(".docx"):
+            safe = f"{safe}.docx"
+        stem = Path(safe).stem
+        suffix = Path(safe).suffix
+        candidate = safe
+        counter = 1
+        while candidate in used:
+            candidate = f"{stem}_{counter}{suffix}"
+            counter += 1
+        used.add(candidate)
+        return candidate
+
+    def _prepare_badge_photo(
+        self,
+        photo_bytes: bytes | None,
+        width_mm: float,
+        height_mm: float,
+    ) -> bytes | None:
+        """Resize/compress participant photo close to print size for faster DOCX/PDF generation."""
+        if not photo_bytes:
+            return None
+        try:
+            target_w = max(int((width_mm / 25.4) * self.BADGE_PHOTO_DPI), 1)
+            target_h = max(int((height_mm / 25.4) * self.BADGE_PHOTO_DPI), 1)
+            with Image.open(io.BytesIO(photo_bytes)) as img:
+                img = ImageOps.exif_transpose(img).convert("RGB")
+                contained = ImageOps.contain(img, (target_w, target_h), Image.Resampling.LANCZOS)
+                canvas = Image.new("RGB", (target_w, target_h), (255, 255, 255))
+                offset_x = (target_w - contained.width) // 2
+                offset_y = (target_h - contained.height) // 2
+                canvas.paste(contained, (offset_x, offset_y))
+
+                out = io.BytesIO()
+                canvas.save(out, format="JPEG", quality=82, optimize=True)
+                return out.getvalue()
+        except Exception:  # noqa: BLE001
+            return photo_bytes
 
     def _build_qr_png(self, payload: str) -> bytes:
         return self.qr_service.generate_qr_code(
@@ -112,16 +350,36 @@ class WordTemplateGenerator:
         for paragraph in self._iter_all_paragraphs(doc):
             self._replace_text_tokens_in_paragraph(paragraph, mapping)
 
-    def _replace_qr_token(self, doc: Document, token: str, qr_png: bytes, width_mm: float = 35) -> None:
+    def _replace_image_token(
+        self,
+        doc: Document,
+        token: str,
+        image_bytes: bytes | None,
+        width_mm: float,
+        height_mm: float | None = None,
+    ) -> None:
+        if image_bytes is None:
+            self._replace_text_tokens(doc, {token: ""})
+            return
+
         for paragraph in self._iter_all_paragraphs(doc):
             if token in paragraph.text:
-                self._insert_qr_in_paragraph(paragraph, token=token, qr_png=qr_png, width_mm=width_mm)
+                self._insert_image_in_paragraph(
+                    paragraph,
+                    token=token,
+                    image_bytes=image_bytes,
+                    width_mm=width_mm,
+                    height_mm=height_mm,
+                )
                 return
 
-        # Fallback: append QR at the end if token not found.
+        # Fallback: append image at the end if token not found.
         paragraph = doc.add_paragraph()
         run = paragraph.add_run()
-        run.add_picture(io.BytesIO(qr_png), width=Mm(width_mm))
+        if height_mm is not None:
+            run.add_picture(io.BytesIO(image_bytes), width=Mm(width_mm), height=Mm(height_mm))
+        else:
+            run.add_picture(io.BytesIO(image_bytes), width=Mm(width_mm))
 
     def _iter_all_paragraphs(self, doc: Document) -> Iterable:
         yield from doc.paragraphs
@@ -176,7 +434,13 @@ class WordTemplateGenerator:
             paragraph.text = replaced
 
     @staticmethod
-    def _insert_qr_in_paragraph(paragraph, token: str, qr_png: bytes, width_mm: float) -> None:
+    def _insert_image_in_paragraph(
+        paragraph,
+        token: str,
+        image_bytes: bytes,
+        width_mm: float,
+        height_mm: float | None = None,
+    ) -> None:
         text = paragraph.text
         before, after = text.split(token, 1)
 
@@ -187,10 +451,44 @@ class WordTemplateGenerator:
         else:
             paragraph.add_run(before)
 
-        qr_run = paragraph.add_run()
-        qr_run.add_picture(io.BytesIO(qr_png), width=Mm(width_mm))
+        image_run = paragraph.add_run()
+        if height_mm is not None:
+            image_run.add_picture(
+                io.BytesIO(image_bytes),
+                width=Mm(width_mm),
+                height=Mm(height_mm),
+            )
+        else:
+            image_run.add_picture(io.BytesIO(image_bytes), width=Mm(width_mm))
         if after:
             paragraph.add_run(after)
+
+    def _get_badge_photo_index(self) -> dict[str, Path]:
+        if self._badge_photo_index is not None:
+            return self._badge_photo_index
+
+        index: dict[str, Path] = {}
+        if self.badge_photos_dir.exists():
+            for path in self.badge_photos_dir.rglob("*"):
+                if not path.is_file():
+                    continue
+                if path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
+                    continue
+                rel = path.relative_to(self.badge_photos_dir)
+                normalized_rel = self._normalize_photo_key(str(rel.with_suffix("")).replace("\\", "/"))
+                normalized_stem = self._normalize_photo_key(path.stem)
+                index[normalized_rel] = path
+                index.setdefault(normalized_stem, path)
+
+        self._badge_photo_index = index
+        return index
+
+    @staticmethod
+    def _normalize_photo_key(value: str) -> str:
+        cleaned = re.sub(r"[^\w/]+", "_", value, flags=re.UNICODE).strip("_")
+        cleaned = cleaned.replace("\\", "/")
+        cleaned = re.sub(r"/+", "/", cleaned)
+        return cleaned.lower()
 
     @staticmethod
     def _save_doc_to_bytes(doc: Document) -> bytes:
@@ -294,5 +592,60 @@ class WordTemplateGenerator:
         right_cell.add_paragraph("Start time: _____________   End time: _____________")
         right_cell.add_paragraph("QR: {{QR_IMAGE}}")
         right_cell.add_paragraph("Keep tokens: {{QR_IMAGE}}, {{TOUR_NUMBER}}, {{TOUR_MODE}}.")
+
+        doc.save(str(path))
+
+    @staticmethod
+    def _create_default_badge_template(path: Path) -> None:
+        doc = Document()
+        section = doc.sections[0]
+        section.page_width = Mm(90)
+        section.page_height = Mm(120)
+        section.left_margin = Mm(5)
+        section.right_margin = Mm(5)
+        section.top_margin = Mm(5)
+        section.bottom_margin = Mm(5)
+
+        title = doc.add_paragraph("ШАБЛОН БЕЙДЖА")
+        title.alignment = 1
+        title.runs[0].bold = True
+        title.runs[0].font.size = Pt(13)
+
+        comp = doc.add_paragraph("{{COMPETITION_NAME}}")
+        comp.alignment = 1
+        comp.runs[0].font.size = Pt(10)
+
+        role = doc.add_paragraph("{{ROLE}}")
+        role.alignment = 1
+        role.runs[0].bold = True
+        role.runs[0].font.size = Pt(10)
+
+        name = doc.add_paragraph("{{LAST_NAME}} {{FIRST_NAME}} {{MIDDLE_NAME}}")
+        name.alignment = 1
+        name.runs[0].bold = True
+        name.runs[0].font.size = Pt(14)
+
+        school = doc.add_paragraph("{{PARTICIPANT_SCHOOL}}")
+        school.alignment = 1
+        school.runs[0].font.size = Pt(10)
+
+        institution = doc.add_paragraph("{{INSTITUTION_NAME}}")
+        institution.alignment = 1
+        institution.runs[0].font.size = Pt(10)
+
+        photo = doc.add_paragraph("{{PHOTO}}")
+        photo.alignment = 1
+
+        qr = doc.add_paragraph("{{QR_IMAGE}}")
+        qr.alignment = 1
+
+        hint = doc.add_paragraph(
+            "Токены: {{QR_IMAGE}}, {{PHOTO}}, {{COMPETITION_NAME}}, {{ROLE}}, "
+            "{{LAST_NAME}}, {{FIRST_NAME}}, {{MIDDLE_NAME}}, "
+            "{{PARTICIPANT_NAME}}, {{PARTICIPANT_SCHOOL}}, {{INSTITUTION_NAME}}."
+        )
+        hint.alignment = 1
+        for run in hint.runs:
+            run.font.size = Pt(8)
 
         doc.save(str(path))
