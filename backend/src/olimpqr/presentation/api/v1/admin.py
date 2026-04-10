@@ -6,6 +6,7 @@ import json
 import re
 import secrets
 import zipfile
+from urllib.parse import quote
 from html import escape
 from datetime import datetime
 from pathlib import Path
@@ -1317,6 +1318,7 @@ async def admit_and_download_single(
     zip_buffer = BytesIO()
     word_generator = WordTemplateGenerator()
     added_files = 0
+    gen_errors: list[str] = []
 
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         # --- Answer sheets (special olympiad) ---
@@ -1342,8 +1344,8 @@ async def admit_and_download_single(
                     )
                     zf.writestr(f"{folder}/tour_{tour_number}/A3_tour_{tour_number}.docx", cover_docx)
                     added_files += 1
-                except Exception:
-                    pass
+                except Exception as exc:
+                    gen_errors.append(f"A3 тур {tour_number}: {exc}")
 
                 for task_number in task_numbers:
                     task_qr_payload = f"attempt:{attempt.id}:tour:{tour_number}:task:{task_number}"
@@ -1370,8 +1372,8 @@ async def admit_and_download_single(
                                 extra_docx,
                             )
                             added_files += 1
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        gen_errors.append(f"Задание {tour_number}/{task_number}: {exc}")
 
         # --- Badge ---
         entry_token_raw = reg.entry_token.raw_token if reg.entry_token else None
@@ -1401,18 +1403,21 @@ async def admit_and_download_single(
                 )
                 zf.writestr(f"{folder}/badge.docx", badge_docx)
                 added_files += 1
-            except Exception:
-                pass
+            except Exception as exc:
+                gen_errors.append(f"Бейдж: {exc}")
+        else:
+            gen_errors.append("Бейдж: отсутствует raw entry token (токен уже использован или не создан)")
 
     if added_files == 0:
-        raise HTTPException(status_code=400, detail="Не удалось сгенерировать файлы. Проверьте шаблоны олимпиады.")
+        details = "; ".join(gen_errors) if gen_errors else "Проверьте шаблоны олимпиады."
+        raise HTTPException(status_code=400, detail=f"Не удалось сгенерировать файлы: {details}")
 
     zip_buffer.seek(0)
-    safe_name = _slugify_folder_name(participant.full_name) or str(registration_id)
+    encoded_name = quote(f"{participant.full_name}.zip", safe="")
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{safe_name}.zip"'},
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}"},
     )
 
 
