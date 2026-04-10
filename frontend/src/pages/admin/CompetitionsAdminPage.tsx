@@ -66,6 +66,7 @@ const CompetitionsAdminPage: React.FC = () => {
   const [competitions, setCompetitions] = useState<Competition[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -743,12 +744,15 @@ const CompetitionsAdminPage: React.FC = () => {
   const handleAdmitAndDownload = async (registrationId: string, participantName: string) => {
     setDownloadingRegId(registrationId);
     setError(null);
+    setWarning(null);
     try {
       const response = await api.post(
         `admin/registrations/${registrationId}/admit-and-download`,
         {},
         { responseType: 'blob', timeout: 120000 }
       );
+      const warnings = response.headers['x-warnings'] as string | undefined;
+      if (warnings) setWarning(warnings);
       const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/zip' }));
       const link = document.createElement('a');
       link.href = url;
@@ -1195,6 +1199,31 @@ const CompetitionsAdminPage: React.FC = () => {
       </div>
 
       {error && <div className="alert alert-error mb-16">{error}</div>}
+      {warning && (
+        <div
+          className="mb-16"
+          style={{
+            background: '#fefce8',
+            border: '1px solid #fde047',
+            borderRadius: 8,
+            padding: '10px 14px',
+            color: '#854d0e',
+            fontSize: 13,
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 8,
+          }}
+        >
+          <span style={{ fontSize: 16, flexShrink: 0 }}>⚠</span>
+          <span>{warning}</span>
+          <button
+            onClick={() => setWarning(null)}
+            style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: '#854d0e', fontSize: 14, padding: '0 2px', flexShrink: 0 }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       <table className="table">
         <thead>

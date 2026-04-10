@@ -1368,7 +1368,7 @@ async def admit_and_download_single(
             raise HTTPException(status_code=400, detail="У регистрации отсутствует entry token")
 
         # Admin bypass: extend expired token so ApproveAdmissionUseCase can proceed
-        if reg.entry_token.is_expired:
+        if datetime.utcnow() > reg.entry_token.expires_at:
             from ....infrastructure.database.models import EntryTokenModel
             from datetime import timedelta
             await db.execute(
@@ -1487,6 +1487,8 @@ async def admit_and_download_single(
                 first_name=first_name,
                 middle_name=middle_name,
             )
+            if photo_bytes is None:
+                gen_errors.append("Фото для бейджа не найдено — бейдж будет без фотографии")
             try:
                 badge_docx = word_generator.generate_badge_docx(
                     qr_payload=entry_token_raw,
@@ -1512,10 +1514,13 @@ async def admit_and_download_single(
 
     zip_buffer.seek(0)
     encoded_name = quote(f"{participant.full_name}.zip", safe="")
+    headers: dict[str, str] = {"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}"}
+    if gen_errors:
+        headers["X-Warnings"] = "; ".join(gen_errors)
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}"},
+        headers=headers,
     )
 
 
