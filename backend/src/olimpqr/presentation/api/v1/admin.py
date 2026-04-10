@@ -2462,7 +2462,7 @@ async def admit_all_special_and_download(
                         tour_number=tour_number,
                         mode=mode_label,
                     )
-                    zf.writestr(f"{folder}/A3_tour_{tour_number}.docx", cover_docx)
+                    zf.writestr(f"{folder}/tour_{tour_number}/A3_tour_{tour_number}.docx", cover_docx)
                     added_files += 1
                 except Exception as exc:  # noqa: BLE001
                     admit_errors.append(
