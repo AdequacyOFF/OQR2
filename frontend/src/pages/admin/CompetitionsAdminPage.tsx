@@ -82,6 +82,15 @@ const CompetitionsAdminPage: React.FC = () => {
   const [templateUploadingKind, setTemplateUploadingKind] = useState<SpecialTemplateKind | null>(null);
   const [templateDownloadingKind, setTemplateDownloadingKind] = useState<SpecialTemplateKind | null>(null);
 
+  // Delete / replace participant state
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [deleteConfirmName, setDeleteConfirmName] = useState<string>('');
+  const [deletingReg, setDeletingReg] = useState(false);
+  const [replaceRegId, setReplaceRegId] = useState<string | null>(null);
+  const [replaceSearch, setReplaceSearch] = useState('');
+  const [replacing, setReplacing] = useState(false);
+  const [downloadingRegId, setDownloadingRegId] = useState<string | null>(null);
+
   const {
     register,
     handleSubmit,
@@ -632,6 +641,89 @@ const CompetitionsAdminPage: React.FC = () => {
       setError(message);
     } finally {
       setRegistering(false);
+    }
+  };
+
+  const handleDeleteRegistration = async () => {
+    if (!deleteConfirmId || !regCompetition) return;
+    setDeletingReg(true);
+    setError(null);
+    try {
+      await api.delete(`admin/registrations/${deleteConfirmId}`);
+      const regRes = await api.get<{ items: AdminRegistrationItem[]; total: number }>(
+        `admin/registrations/${regCompetition.id}`
+      );
+      setRegItems(regRes.data.items || []);
+    } catch (err: unknown) {
+      const message =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Ошибка удаления регистрации.';
+      setError(message);
+    } finally {
+      setDeletingReg(false);
+      setDeleteConfirmId(null);
+      setDeleteConfirmName('');
+    }
+  };
+
+  const handleReplaceRegistration = async (newParticipantId: string) => {
+    if (!replaceRegId || !regCompetition) return;
+    setReplacing(true);
+    setError(null);
+    try {
+      await api.delete(`admin/registrations/${replaceRegId}`);
+      await api.post('admin/registrations', {
+        participant_id: newParticipantId,
+        competition_id: regCompetition.id,
+      });
+      const regRes = await api.get<{ items: AdminRegistrationItem[]; total: number }>(
+        `admin/registrations/${regCompetition.id}`
+      );
+      setRegItems(regRes.data.items || []);
+    } catch (err: unknown) {
+      const message =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Ошибка замены участника.';
+      setError(message);
+    } finally {
+      setReplacing(false);
+      setReplaceRegId(null);
+      setReplaceSearch('');
+    }
+  };
+
+  const handleAdmitAndDownload = async (registrationId: string, participantName: string) => {
+    setDownloadingRegId(registrationId);
+    setError(null);
+    try {
+      const response = await api.post(
+        `admin/registrations/${registrationId}/admit-and-download`,
+        {},
+        { responseType: 'blob', timeout: 120000 }
+      );
+      const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/zip' }));
+      const link = document.createElement('a');
+      link.href = url;
+      const safe = participantName.replace(/[^a-zA-Zа-яА-ЯёЁ0-9_\- ]/g, '').trim() || registrationId;
+      link.download = `${safe}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      // Reload registrations (participant may have been admitted)
+      if (regCompetition) {
+        const regRes = await api.get<{ items: AdminRegistrationItem[]; total: number }>(
+          `admin/registrations/${regCompetition.id}`
+        );
+        setRegItems(regRes.data.items || []);
+      }
+    } catch (err: unknown) {
+      const message =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Ошибка генерации файлов.';
+      setError(message);
+    } finally {
+      setDownloadingRegId(null);
     }
   };
 
@@ -1651,9 +1743,122 @@ const CompetitionsAdminPage: React.FC = () => {
               </div>
             )}
 
+            {/* Delete confirmation */}
+            {deleteConfirmId && (
+              <div
+                style={{
+                  background: '#fef2f2',
+                  border: '1px solid #fca5a5',
+                  borderRadius: 8,
+                  padding: 16,
+                  marginBottom: 16,
+                }}
+              >
+                <p style={{ margin: '0 0 12px', fontWeight: 600 }}>
+                  Удалить участника «{deleteConfirmName}» из олимпиады?
+                </p>
+                <p style={{ margin: '0 0 12px', fontSize: 13, color: '#555' }}>
+                  Все связанные данные (бланки, баллы) будут удалены безвозвратно.
+                </p>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <Button
+                    variant="secondary"
+                    onClick={() => { setDeleteConfirmId(null); setDeleteConfirmName(''); }}
+                  >
+                    Отмена
+                  </Button>
+                  <Button
+                    onClick={handleDeleteRegistration}
+                    loading={deletingReg}
+                    style={{ background: '#dc2626', borderColor: '#dc2626', color: 'white' }}
+                  >
+                    Удалить
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* Replace participant panel */}
+            {replaceRegId && (
+              <div
+                style={{
+                  background: '#eff6ff',
+                  border: '1px solid #93c5fd',
+                  borderRadius: 8,
+                  padding: 16,
+                  marginBottom: 16,
+                }}
+              >
+                <p style={{ margin: '0 0 8px', fontWeight: 600 }}>
+                  Выберите нового участника для замены:
+                </p>
+                <input
+                  type="text"
+                  value={replaceSearch}
+                  onChange={(e) => setReplaceSearch(e.target.value)}
+                  placeholder="Поиск по ФИО или школе..."
+                  style={{
+                    width: '100%',
+                    padding: '6px 10px',
+                    borderRadius: 6,
+                    border: '1px solid #d1d5db',
+                    fontSize: 13,
+                    marginBottom: 8,
+                    boxSizing: 'border-box',
+                  }}
+                />
+                <div style={{ maxHeight: 160, overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: 6 }}>
+                  {participants
+                    .filter((p) => {
+                      const q = replaceSearch.toLowerCase();
+                      return p.full_name.toLowerCase().includes(q) || p.school.toLowerCase().includes(q);
+                    })
+                    .slice(0, 15)
+                    .map((p) => (
+                      <div
+                        key={p.id}
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          padding: '6px 10px',
+                          borderBottom: '1px solid #f3f4f6',
+                          fontSize: 13,
+                        }}
+                      >
+                        <span>
+                          <strong>{p.full_name}</strong>
+                          <span style={{ marginLeft: 8, color: '#6b7280' }}>{p.school}</span>
+                        </span>
+                        <Button
+                          className="btn-sm"
+                          onClick={() => handleReplaceRegistration(p.id)}
+                          loading={replacing}
+                        >
+                          Заменить
+                        </Button>
+                      </div>
+                    ))}
+                  {participants.filter((p) => {
+                    const q = replaceSearch.toLowerCase();
+                    return p.full_name.toLowerCase().includes(q) || p.school.toLowerCase().includes(q);
+                  }).length === 0 && (
+                    <p style={{ padding: 10, color: '#9ca3af', fontSize: 13, margin: 0 }}>Не найдено</p>
+                  )}
+                </div>
+                <Button
+                  variant="secondary"
+                  onClick={() => { setReplaceRegId(null); setReplaceSearch(''); }}
+                  style={{ marginTop: 8 }}
+                >
+                  Отмена
+                </Button>
+              </div>
+            )}
+
             {/* Registrations table */}
             {regItems.length > 0 ? (
-              <div style={{ maxHeight: 300, overflowY: 'auto', marginBottom: 24 }}>
+              <div style={{ maxHeight: 340, overflowY: 'auto', marginBottom: 24 }}>
                 <table className="table" style={{ fontSize: 13 }}>
                   <thead>
                     <tr>
@@ -1663,6 +1868,7 @@ const CompetitionsAdminPage: React.FC = () => {
                       <th>Капитан</th>
                       <th>Учреждение</th>
                       <th>Статус</th>
+                      <th></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1674,6 +1880,58 @@ const CompetitionsAdminPage: React.FC = () => {
                         <td>{item.participant_is_captain ? 'Да' : 'Нет'}</td>
                         <td>{item.institution_name || '—'}</td>
                         <td>{getRegStatusLabel(item.status)}</td>
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          <button
+                            title="Допустить и скачать бланки + бейдж"
+                            onClick={() => handleAdmitAndDownload(item.registration_id, item.participant_name)}
+                            disabled={downloadingRegId === item.registration_id}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              cursor: downloadingRegId === item.registration_id ? 'default' : 'pointer',
+                              color: '#16a34a',
+                              fontSize: 15,
+                              padding: '2px 6px',
+                              marginRight: 2,
+                              opacity: downloadingRegId === item.registration_id ? 0.5 : 1,
+                            }}
+                          >
+                            {downloadingRegId === item.registration_id ? '…' : '↓'}
+                          </button>
+                          <button
+                            title="Заменить участника"
+                            onClick={() => { setReplaceRegId(item.registration_id); setReplaceSearch(''); setDeleteConfirmId(null); }}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              cursor: 'pointer',
+                              color: '#2563eb',
+                              fontSize: 15,
+                              padding: '2px 6px',
+                              marginRight: 2,
+                            }}
+                          >
+                            ⇄
+                          </button>
+                          <button
+                            title="Удалить регистрацию"
+                            onClick={() => {
+                              setDeleteConfirmId(item.registration_id);
+                              setDeleteConfirmName(item.participant_name);
+                              setReplaceRegId(null);
+                            }}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              cursor: 'pointer',
+                              color: '#dc2626',
+                              fontSize: 15,
+                              padding: '2px 6px',
+                            }}
+                          >
+                            ✕
+                          </button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>

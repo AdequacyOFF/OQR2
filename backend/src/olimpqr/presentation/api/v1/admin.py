@@ -45,6 +45,7 @@ from ....application.use_cases.admission import ApproveAdmissionUseCase
 from ....application.use_cases.registration.register_for_competition import (
     RegisterForCompetitionUseCase,
 )
+from ....application.use_cases.competitions.get_scoring_progress import GetScoringProgressUseCase
 from ....config import settings
 from ...schemas.admin_schemas import (
     CreateStaffRequest,
@@ -61,6 +62,9 @@ from ...schemas.admin_schemas import (
     AssignStaffRequest,
     CompetitionStaffItem,
     CompetitionStaffList,
+    TourProgress,
+    ScoringProgressItem,
+    ScoringProgressResponse,
 )
 from ...dependencies import require_role
 
@@ -1138,7 +1142,7 @@ async def admin_register_participant(
     competition_repo = CompetitionRepositoryImpl(db)
     participant_repo = ParticipantRepositoryImpl(db)
     entry_token_repo = EntryTokenRepositoryImpl(db)
-    token_service = TokenService()
+    token_service = TokenService(settings.hmac_secret_key)
 
     use_case = RegisterForCompetitionUseCase(
         registration_repository=registration_repo,
@@ -1215,6 +1219,251 @@ async def list_competition_registrations(
         )
 
     return AdminRegistrationListResponse(items=items, total=len(items))
+
+
+@router.delete("/registrations/{registration_id}", status_code=status.HTTP_200_OK)
+async def delete_registration(
+    registration_id: UUID,
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete (remove) a participant registration from a competition."""
+    registration_repo = RegistrationRepositoryImpl(db)
+    reg = await registration_repo.get_by_id(registration_id)
+    if not reg:
+        raise HTTPException(status_code=404, detail="Регистрация не найдена")
+    await registration_repo.delete(registration_id)
+    return {"ok": True}
+
+
+@router.post("/registrations/{registration_id}/admit-and-download")
+async def admit_and_download_single(
+    registration_id: UUID,
+    request: Request,
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admit a single participant (if pending) and download their answer sheets + badge as ZIP."""
+    from ....infrastructure.database.models import (
+        RegistrationModel,
+        ParticipantModel,
+    )
+    from io import BytesIO
+
+    # Load registration with all relationships
+    stmt = (
+        select(RegistrationModel)
+        .where(RegistrationModel.id == registration_id)
+        .options(
+            selectinload(RegistrationModel.participant).selectinload(ParticipantModel.institution),
+            selectinload(RegistrationModel.entry_token),
+            selectinload(RegistrationModel.attempts),
+        )
+    )
+    result = await db.execute(stmt)
+    reg = result.scalar_one_or_none()
+    if not reg:
+        raise HTTPException(status_code=404, detail="Регистрация не найдена")
+
+    participant = reg.participant
+    if not participant:
+        raise HTTPException(status_code=400, detail="Участник не найден")
+
+    competition_repo = CompetitionRepositoryImpl(db)
+    competition = await competition_repo.get_by_id(reg.competition_id)
+    if not competition:
+        raise HTTPException(status_code=404, detail="Олимпиада не найдена")
+
+    # Admit if still pending
+    if reg.status.value == "pending":
+        if not reg.entry_token or not reg.entry_token.raw_token:
+            raise HTTPException(status_code=400, detail="У регистрации отсутствует entry token")
+        approve_uc = ApproveAdmissionUseCase(
+            token_service=TokenService(settings.hmac_secret_key),
+            entry_token_repository=EntryTokenRepositoryImpl(db),
+            registration_repository=RegistrationRepositoryImpl(db),
+            competition_repository=competition_repo,
+            attempt_repository=AttemptRepositoryImpl(db),
+            audit_log_repository=AuditLogRepositoryImpl(db),
+            answer_sheet_repository=AnswerSheetRepositoryImpl(db),
+            storage=MinIOStorage(),
+            sheet_generator=SheetGenerator(),
+            room_repository=RoomRepositoryImpl(db),
+            seat_assignment_repository=SeatAssignmentRepositoryImpl(db),
+            participant_repository=ParticipantRepositoryImpl(db),
+        )
+        try:
+            await approve_uc.execute(
+                registration_id=reg.id,
+                raw_entry_token=reg.entry_token.raw_token,
+                admitter_user_id=current_user.id,
+                ip_address=request.client.host if request.client else None,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Ошибка допуска: {exc}")
+
+        # Reload registration after admission
+        result = await db.execute(stmt)
+        reg = result.scalar_one_or_none()
+        if not reg:
+            raise HTTPException(status_code=404, detail="Регистрация не найдена после допуска")
+
+    if not reg.attempts:
+        raise HTTPException(status_code=400, detail="У участника нет попытки. Допустите его сначала через стойку регистрации.")
+
+    attempt = reg.attempts[0]
+    folder = _slugify_folder_name(f"{participant.full_name}")
+
+    zip_buffer = BytesIO()
+    word_generator = WordTemplateGenerator()
+    added_files = 0
+
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        # --- Answer sheets (special olympiad) ---
+        if competition.is_special:
+            tours = _extract_special_tours(competition)
+            mode_labels = {
+                "individual": "Индивидуальный",
+                "individual_captains": "Индивидуальный (капитаны)",
+                "team": "Командный",
+            }
+            for tour in tours:
+                tour_number = int(tour["tour_number"])
+                mode = str(tour["mode"])
+                mode_label = mode_labels.get(mode, mode)
+                task_numbers = tour["task_numbers"]
+
+                cover_qr_payload = f"attempt:{attempt.id}:tour:{tour_number}:cover"
+                try:
+                    cover_docx = word_generator.generate_a3_cover(
+                        qr_payload=cover_qr_payload,
+                        tour_number=tour_number,
+                        mode=mode_label,
+                    )
+                    zf.writestr(f"{folder}/tour_{tour_number}/A3_tour_{tour_number}.docx", cover_docx)
+                    added_files += 1
+                except Exception:
+                    pass
+
+                for task_number in task_numbers:
+                    task_qr_payload = f"attempt:{attempt.id}:tour:{tour_number}:task:{task_number}"
+                    try:
+                        task_docx = word_generator.generate_answer_blank(
+                            qr_payload=task_qr_payload,
+                            tour_number=tour_number,
+                            task_number=int(task_number),
+                            mode=mode_label,
+                        )
+                        task_folder = f"{folder}/tour_{tour_number}/task_{task_number}"
+                        zf.writestr(f"{task_folder}/task_{task_number}.docx", task_docx)
+                        added_files += 1
+                        for extra_i in range(1, 6):
+                            extra_docx = word_generator.generate_answer_blank(
+                                qr_payload=task_qr_payload,
+                                tour_number=tour_number,
+                                task_number=int(task_number),
+                                mode=mode_label,
+                                tour_task=f"{tour_number}/{task_number}/{extra_i}",
+                            )
+                            zf.writestr(
+                                f"{task_folder}/дополнительные бланки/extra_{extra_i}.docx",
+                                extra_docx,
+                            )
+                            added_files += 1
+                    except Exception:
+                        pass
+
+        # --- Badge ---
+        entry_token_raw = reg.entry_token.raw_token if reg.entry_token else None
+        if entry_token_raw:
+            institution_name = participant.institution.name if participant.institution else ""
+            last_name, first_name, middle_name = _split_full_name(participant.full_name)
+            photo_index = await _load_badge_photo_index(db)
+            photo_bytes = _find_badge_photo_bytes(
+                photo_index=photo_index,
+                city=participant.institution_location,
+                institution_name=institution_name,
+                last_name=last_name,
+                first_name=first_name,
+                middle_name=middle_name,
+            )
+            try:
+                badge_docx = word_generator.generate_badge_docx(
+                    qr_payload=entry_token_raw,
+                    first_name=first_name,
+                    last_name=last_name,
+                    middle_name=middle_name,
+                    role="УЧАСТНИК",
+                    participant_school=participant.school,
+                    institution_name=institution_name,
+                    competition_name=competition.name,
+                    photo_bytes=photo_bytes,
+                )
+                zf.writestr(f"{folder}/badge.docx", badge_docx)
+                added_files += 1
+            except Exception:
+                pass
+
+    if added_files == 0:
+        raise HTTPException(status_code=400, detail="Не удалось сгенерировать файлы. Проверьте шаблоны олимпиады.")
+
+    zip_buffer.seek(0)
+    safe_name = _slugify_folder_name(participant.full_name) or str(registration_id)
+    return StreamingResponse(
+        zip_buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}.zip"'},
+    )
+
+
+@router.get("/competitions/{competition_id}/scoring-progress", response_model=ScoringProgressResponse)
+async def get_scoring_progress(
+    competition_id: UUID,
+    current_user: User = Depends(require_role(UserRole.ADMIN, UserRole.SCANNER)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return scoring progress for all participants of a competition."""
+    use_case = GetScoringProgressUseCase(
+        competition_repository=CompetitionRepositoryImpl(db),
+        registration_repository=RegistrationRepositoryImpl(db),
+        attempt_repository=AttemptRepositoryImpl(db),
+        participant_repository=ParticipantRepositoryImpl(db),
+    )
+    try:
+        result = await use_case.execute(competition_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    items = [
+        ScoringProgressItem(
+            registration_id=item.registration_id,
+            participant_id=item.participant_id,
+            participant_name=item.participant_name,
+            participant_school=item.participant_school,
+            variant_number=item.variant_number,
+            attempt_id=item.attempt_id,
+            attempt_status=item.attempt_status,
+            tours=[
+                TourProgress(
+                    tour_number=t.tour_number,
+                    task_scores=t.task_scores,
+                    tour_total=t.tour_total,
+                )
+                for t in item.tours
+            ],
+            score_total=item.score_total,
+        )
+        for item in result.items
+    ]
+
+    return ScoringProgressResponse(
+        competition_id=result.competition_id,
+        competition_name=result.competition_name,
+        is_special=result.is_special,
+        tours_count=result.tours_count,
+        items=items,
+        total=result.total,
+    )
 
 
 @router.post("/registrations/{competition_id}/badges-pdf/start")

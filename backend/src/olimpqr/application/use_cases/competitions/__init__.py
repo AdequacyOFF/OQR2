@@ -6,6 +6,7 @@ from .list_competitions import ListCompetitionsUseCase
 from .update_competition import UpdateCompetitionUseCase
 from .delete_competition import DeleteCompetitionUseCase
 from .change_status import ChangeCompetitionStatusUseCase
+from .get_scoring_progress import GetScoringProgressUseCase
 
 __all__ = [
     "CreateCompetitionUseCase",
@@ -14,4 +15,5 @@ __all__ = [
     "UpdateCompetitionUseCase",
     "DeleteCompetitionUseCase",
     "ChangeCompetitionStatusUseCase",
+    "GetScoringProgressUseCase",
 ]

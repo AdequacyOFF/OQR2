@@ -104,6 +104,36 @@ class AdminRegistrationListResponse(BaseModel):
     total: int
 
 
+class TourProgress(BaseModel):
+    """Score progress for a single tour."""
+    tour_number: int
+    task_scores: Optional[Dict[str, int]] = None
+    tour_total: Optional[int] = None
+
+
+class ScoringProgressItem(BaseModel):
+    """Single participant scoring status for admin/scanner progress table."""
+    registration_id: UUID
+    participant_id: UUID
+    participant_name: str
+    participant_school: str
+    variant_number: Optional[int] = None
+    attempt_id: Optional[UUID] = None
+    attempt_status: Optional[str] = None
+    tours: list["TourProgress"] = []
+    score_total: Optional[int] = None
+
+
+class ScoringProgressResponse(BaseModel):
+    """Full competition scoring progress for admin/scanner table."""
+    competition_id: UUID
+    competition_name: str
+    is_special: bool
+    tours_count: int
+    items: list["ScoringProgressItem"]
+    total: int
+
+
 class AssignStaffRequest(BaseModel):
     """Assign a staff user to a competition."""
     user_id: UUID

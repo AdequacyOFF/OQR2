@@ -149,3 +149,31 @@ export interface AdminRegistrationItem {
   entry_token: string | null;
   status: string;
 }
+
+export interface ScoringProgressTour {
+  tour_number: number;
+  task_scores: Record<string, number> | null;
+  tour_total: number | null;
+}
+
+export interface ScoringProgressItem {
+  registration_id: string;
+  participant_id: string;
+  participant_name: string;
+  participant_school: string;
+  variant_number: number | null;
+  attempt_id: string | null;
+  attempt_status: string | null;
+  tours: ScoringProgressTour[];
+  score_total: number | null;
+}
+
+export interface ScoringProgressResponse {
+  competition_id: string;
+  competition_name: string;
+  is_special: boolean;
+  tours_count: number;
+  items: ScoringProgressItem[];
+  total: number;
+}
+
