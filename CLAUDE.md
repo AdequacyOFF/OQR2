@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-OlimpQR is an Olympic Competition Management System with anonymous QR code-based answer sheet tracking. Backend is FastAPI (Python 3.13), frontend is React+TypeScript+Vite, with PostgreSQL, Redis, MinIO, and Celery for async OCR processing.
+OlimpQR is an Olympic Competition Management System with anonymous QR code-based answer sheet tracking. Backend is FastAPI (Python 3.13), frontend is React+TypeScript+Vite, with PostgreSQL, Redis, MinIO, and Celery for async OCR processing and badge PDF generation.
 
 ## Commands
 
@@ -65,12 +65,15 @@ backend/src/olimpqr/
 │   ├── repositories/ # SQLAlchemy repository implementations
 │   ├── security/     # bcrypt passwords, PyJWT tokens, slowapi rate limiting
 │   ├── ocr/          # PaddleOCR + OpenCV pipeline
-│   ├── pdf/          # ReportLab answer sheet generation
+│   ├── pdf/          # ReportLab answer sheet + badge PDF generation
 │   ├── storage/      # MinIO S3 client
-│   └── tasks/        # Celery async tasks
+│   └── tasks/        # Celery async tasks (ocr_tasks, badge_tasks)
 └── presentation/     # FastAPI API layer
     ├── api/v1/       # Endpoint routers: auth, competitions, admission, scans, results, admin,
     │                 # institutions, rooms, documents, invigilator, registrations, profiles
+    │                 # Badge endpoints live in admin.py: /competitions/{id}/badge-template,
+    │                 # /registrations/{id}/badges-pdf, /registrations/{id}/badges-docx,
+    │                 # /special/templates/badge/photos/upload, /special/templates/badge/fonts/upload
     ├── dependencies/ # JWT auth + role-based access (require_role factory)
     └── schemas/      # Pydantic v2 request/response models
 ```
@@ -89,6 +92,7 @@ Four user roles: `ADMIN`, `ADMITTER`, `SCANNER`, `INVIGILATOR`. The `invigilator
 - **API errors**: Catch `ValueError` in endpoints, convert to `HTTPException`
 - **Answer sheets**: Each attempt has a primary `AnswerSheet` (created at admission) and optional extra sheets. Scans link to an `AnswerSheet`, not directly to an `Attempt`.
 - **Seating algorithm** (`AssignSeatUseCase`): spreads participants from the same institution across different rooms; tie-breaks on most free seats; variant = `(seat_number % variants_count) + 1`; idempotent
+- **Badge system**: `BadgeTemplateModel` stores a JSON layout config (width/height, elements array) and optional background image bytes per competition. `BadgePhotoModel` stores participant photos keyed by normalized name/institution. PDF generation runs as a Celery task (`badge_tasks.py`); poll status via `/badge-tasks/{task_id}/status`, download via `/badge-tasks/{task_id}/download`. DOCX generation is synchronous via python-docx and returned as a ZIP.
 
 ### Frontend
 
@@ -118,7 +122,7 @@ Rate limiter is auto-disabled when `ENVIRONMENT=test`.
 
 ## Database
 
-PostgreSQL 16 with async driver (asyncpg). Tables: `users`, `participants`, `competitions`, `registrations`, `entry_tokens`, `attempts`, `scans`, `audit_log`, `institutions`, `rooms`, `seat_assignments`, `documents`, `answer_sheets`, `participant_events`. All enum columns use `values_callable=lambda e: [member.value for member in e]` to map Python enum names (uppercase) to PostgreSQL enum values (lowercase).
+PostgreSQL 16 with async driver (asyncpg). Tables: `users`, `participants`, `competitions`, `registrations`, `entry_tokens`, `attempts`, `scans`, `audit_log`, `institutions`, `rooms`, `seat_assignments`, `documents`, `answer_sheets`, `participant_events`, `badge_templates`, `badge_photos`. All enum columns use `values_callable=lambda e: [member.value for member in e]` to map Python enum names (uppercase) to PostgreSQL enum values (lowercase).
 
 Alembic migrations in `backend/alembic/`. Multiple numbered migrations (001–007+); run them in order via `alembic upgrade head`.
 

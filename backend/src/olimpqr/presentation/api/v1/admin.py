@@ -2482,11 +2482,18 @@ async def admit_all_special_and_download(
                             task_number=int(task_number),
                             mode=mode_label,
                         )
+                        task_folder = f"{folder}/tour_{tour_number}/task_{task_number}"
                         zf.writestr(
-                            f"{folder}/tour_{tour_number}/task_{task_number}.docx",
+                            f"{task_folder}/task_{task_number}.docx",
                             task_docx,
                         )
                         added_files += 1
+                        for extra_i in range(1, 6):
+                            zf.writestr(
+                                f"{task_folder}/дополнительные бланки/extra_{extra_i}.docx",
+                                task_docx,
+                            )
+                            added_files += 1
                     except Exception as exc:  # noqa: BLE001
                         admit_errors.append(
                             {
