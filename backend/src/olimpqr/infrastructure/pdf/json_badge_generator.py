@@ -122,6 +122,24 @@ def _resolve_font(
     return _DEFAULT_FONT
 
 
+def _make_rounded_rect_path(c: rl_canvas.Canvas, x: float, y: float, w: float, h: float, r: float):
+    """Return a closed path for a rounded rectangle using cubic Bézier approximation."""
+    r = min(r, w / 2, h / 2)
+    k = 0.5522847498  # = 4*(sqrt(2)-1)/3  — Bézier circle approximation constant
+    p = c.beginPath()
+    p.moveTo(x + r, y)
+    p.lineTo(x + w - r, y)
+    p.curveTo(x + w - r + k * r, y,          x + w,           y + r - k * r,  x + w,     y + r)
+    p.lineTo(x + w, y + h - r)
+    p.curveTo(x + w,           y + h - r + k * r, x + w - r + k * r, y + h,   x + w - r, y + h)
+    p.lineTo(x + r, y + h)
+    p.curveTo(x + r - k * r,   y + h,         x,               y + h - r + k * r, x,     y + h - r)
+    p.lineTo(x, y + r)
+    p.curveTo(x,               y + r - k * r, x + r - k * r,   y,               x + r,   y)
+    p.close()
+    return p
+
+
 def _hex_to_rgb(hex_color: str) -> tuple[float, float, float]:
     hex_color = (hex_color or "#000000").strip().lstrip("#")
     if len(hex_color) == 3:
@@ -226,7 +244,16 @@ class JsonBadgeGenerator:
         elem_type = elem.get("type", "custom_text")
 
         if elem_type == "image":
-            self._draw_image_element(c, elem, data, x_rl, y_rl, w_rl, h_rl)
+            border = elem.get("border")
+            radius = float(border.get("border_radius_mm", 0)) * mm if border else 0.0
+            if radius > 0:
+                c.saveState()
+                p = _make_rounded_rect_path(c, x_rl, y_rl, w_rl, h_rl, radius)
+                c.clipPath(p, stroke=0, fill=0)
+                self._draw_image_element(c, elem, data, x_rl, y_rl, w_rl, h_rl)
+                c.restoreState()
+            else:
+                self._draw_image_element(c, elem, data, x_rl, y_rl, w_rl, h_rl)
         elif elem_type == "shape":
             self._draw_shape_element(c, elem, x_rl, y_rl, w_rl, h_rl)
         else:
