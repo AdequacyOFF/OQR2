@@ -26,6 +26,7 @@ import AuditLogPage from '../pages/admin/AuditLogPage';
 import CompetitionsAdminPage from '../pages/admin/CompetitionsAdminPage';
 import InstitutionsPage from '../pages/admin/InstitutionsPage';
 import RoomsPage from '../pages/admin/RoomsPage';
+import BadgeEditorPage from '../pages/admin/BadgeEditorPage';
 
 // Invigilator pages
 import InvigilatorPage from '../pages/invigilator/InvigilatorPage';
@@ -188,6 +189,14 @@ const AppRouter: React.FC = () => {
           element={
             <ProtectedRoute allowedRoles={['admin']}>
               <RoomsPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin/badge-editor/:competitionId"
+          element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <BadgeEditorPage />
             </ProtectedRoute>
           }
         />

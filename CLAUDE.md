@@ -50,8 +50,10 @@ Clean Architecture with 4 layers. Dependencies point inward only: `presentation 
 ```
 backend/src/olimpqr/
 ├── domain/           # Pure business logic, no external dependencies
-│   ├── entities/     # User, Competition, Participant, Registration, EntryToken, Attempt, Scan, AuditLog
-│   ├── value_objects/# UserRole, CompetitionStatus, AttemptStatus, RegistrationStatus, Token, Score
+│   ├── entities/     # User, Competition, Participant, Registration, EntryToken, Attempt, Scan, AuditLog,
+│   │                 # Institution, Room, SeatAssignment, Document, AnswerSheet, ParticipantEvent
+│   ├── value_objects/# UserRole, CompetitionStatus, AttemptStatus, RegistrationStatus, Token, Score,
+│   │                 # EventType, SheetKind
 │   ├── services/     # TokenService (HMAC-SHA256), QRService
 │   └── repositories/ # Abstract repository interfaces
 ├── application/      # Use cases orchestrating domain logic
@@ -67,10 +69,15 @@ backend/src/olimpqr/
 │   ├── storage/      # MinIO S3 client
 │   └── tasks/        # Celery async tasks
 └── presentation/     # FastAPI API layer
-    ├── api/v1/       # Endpoint routers (auth, competitions, admission, scans, results, admin)
+    ├── api/v1/       # Endpoint routers: auth, competitions, admission, scans, results, admin,
+    │                 # institutions, rooms, documents, invigilator, registrations, profiles
     ├── dependencies/ # JWT auth + role-based access (require_role factory)
     └── schemas/      # Pydantic v2 request/response models
 ```
+
+### Roles
+
+Four user roles: `ADMIN`, `ADMITTER`, `SCANNER`, `INVIGILATOR`. The `invigilator` role was added later — it grants access to `/invigilator/*` endpoints for recording participant events and issuing extra answer sheets.
 
 ### Key Patterns
 
@@ -80,6 +87,8 @@ backend/src/olimpqr/
 - **Async throughout**: async SQLAlchemy sessions, async FastAPI endpoints, Celery for background OCR
 - **Entity validation**: Dataclasses with `__post_init__` validation, raise `ValueError` for domain errors
 - **API errors**: Catch `ValueError` in endpoints, convert to `HTTPException`
+- **Answer sheets**: Each attempt has a primary `AnswerSheet` (created at admission) and optional extra sheets. Scans link to an `AnswerSheet`, not directly to an `Attempt`.
+- **Seating algorithm** (`AssignSeatUseCase`): spreads participants from the same institution across different rooms; tie-breaks on most free seats; variant = `(seat_number % variants_count) + 1`; idempotent
 
 ### Frontend
 
@@ -109,9 +118,9 @@ Rate limiter is auto-disabled when `ENVIRONMENT=test`.
 
 ## Database
 
-PostgreSQL 16 with async driver (asyncpg). 8 tables with native PostgreSQL enums. All enum columns use `values_callable=lambda e: [member.value for member in e]` to map Python enum names (uppercase) to PostgreSQL enum values (lowercase).
+PostgreSQL 16 with async driver (asyncpg). Tables: `users`, `participants`, `competitions`, `registrations`, `entry_tokens`, `attempts`, `scans`, `audit_log`, `institutions`, `rooms`, `seat_assignments`, `documents`, `answer_sheets`, `participant_events`. All enum columns use `values_callable=lambda e: [member.value for member in e]` to map Python enum names (uppercase) to PostgreSQL enum values (lowercase).
 
-Alembic migrations in `backend/alembic/`. Single initial migration creates all tables and enum types.
+Alembic migrations in `backend/alembic/`. Multiple numbered migrations (001–007+); run them in order via `alembic upgrade head`.
 
 ## Environment
 
@@ -120,6 +129,12 @@ Required services (all provided by `docker-compose.yml`): PostgreSQL, Redis, Min
 - `SECRET_KEY` / `HMAC_SECRET_KEY` — 32+ char secrets for JWT and QR token hashing
 - `MINIO_ENDPOINT` — use `minio:9000` in Docker
 - `ENVIRONMENT` — `development`, `production`, or `test`
+
+After first launch, create the admin account:
+```bash
+ADMIN_PASSWORD="YourPassword" docker-compose exec backend python scripts/init_admin.py
+# Default email: admin@admin.com
+```
 
 ## Known Constraints
 

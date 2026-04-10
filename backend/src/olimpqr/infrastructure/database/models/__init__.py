@@ -15,6 +15,7 @@ from .document import DocumentModel
 from .participant_event import ParticipantEventModel
 from .answer_sheet import AnswerSheetModel
 from .badge_photo import BadgePhotoModel
+from .badge_template import BadgeTemplateModel
 
 __all__ = [
     "UserModel",
@@ -32,4 +33,5 @@ __all__ = [
     "ParticipantEventModel",
     "AnswerSheetModel",
     "BadgePhotoModel",
+    "BadgeTemplateModel",
 ]

@@ -18,6 +18,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import selectinload
 
 from ....infrastructure.database import get_db
+from ....infrastructure.database.models import BadgeTemplateModel
 from ....infrastructure.repositories import (
     UserRepositoryImpl,
     AuditLogRepositoryImpl,
@@ -179,6 +180,13 @@ async def _load_badge_photo_index(db: AsyncSession) -> dict[str, bytes]:
         if not key:
             continue
         index[key] = row.image_bytes
+        # Add partial-path aliases (last 1-3 segments) so that a ZIP with a root
+        # folder (e.g. "photos_archive/city/inst/name") still matches lookups that
+        # omit the root prefix ("city/inst/name", "inst/name", "name").
+        parts = [p for p in key.split("/") if p]
+        for n in range(1, min(4, len(parts))):
+            alias = "/".join(parts[-n:])
+            index.setdefault(alias, row.image_bytes)
     return index
 
 
@@ -1205,6 +1213,95 @@ async def list_competition_registrations(
     return AdminRegistrationListResponse(items=items, total=len(items))
 
 
+@router.post("/registrations/{competition_id}/badges-pdf/start")
+async def start_badges_pdf(
+    competition_id: UUID,
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Start asynchronous badge PDF generation. Returns a task_id to poll for status."""
+    from ....infrastructure.database.models import CompetitionModel
+    from ....infrastructure.tasks.badge_tasks import generate_badges_pdf
+
+    comp_result = await db.execute(
+        select(CompetitionModel).where(CompetitionModel.id == competition_id)
+    )
+    if not comp_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Олимпиада не найдена")
+
+    task = generate_badges_pdf.delay(str(competition_id))
+    return {"task_id": task.id}
+
+
+@router.get("/badge-tasks/{task_id}/status")
+async def get_badge_task_status(
+    task_id: str,
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """Poll the status of a badge PDF generation task."""
+    from ....infrastructure.tasks.celery_app import celery_app as _celery
+
+    result = _celery.AsyncResult(task_id)
+    state = result.state  # PENDING, STARTED, PROGRESS, SUCCESS, FAILURE
+    info = result.info or {}
+
+    if state == "SUCCESS":
+        payload = info if isinstance(info, dict) else {}
+        return {
+            "state": "SUCCESS",
+            "status": payload.get("status", "completed"),
+            "count": payload.get("count"),
+            "object_name": payload.get("object_name"),
+        }
+    if state == "FAILURE":
+        return {"state": "FAILURE", "message": str(info)}
+    if state == "PROGRESS" and isinstance(info, dict):
+        return {
+            "state": "PROGRESS",
+            "stage": info.get("stage", ""),
+            "current": info.get("current", 0),
+            "total": info.get("total", 0),
+        }
+    return {"state": state}
+
+
+@router.get("/badge-tasks/{task_id}/download")
+async def download_badge_task_pdf(
+    task_id: str,
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """Download the generated badge PDF once the task is complete."""
+    from ....infrastructure.tasks.celery_app import celery_app as _celery
+    from ....infrastructure.storage import MinIOStorage
+    from ....infrastructure.tasks.badge_tasks import BADGE_PDF_BUCKET
+
+    result = _celery.AsyncResult(task_id)
+    if result.state != "SUCCESS":
+        raise HTTPException(status_code=400, detail=f"Задача ещё не завершена (состояние: {result.state})")
+
+    payload = result.result or {}
+    if not isinstance(payload, dict) or payload.get("status") != "completed":
+        message = payload.get("message", "неизвестная ошибка") if isinstance(payload, dict) else str(payload)
+        raise HTTPException(status_code=500, detail=f"Генерация завершилась с ошибкой: {message}")
+
+    object_name = payload.get("object_name")
+    if not object_name:
+        raise HTTPException(status_code=500, detail="Результат задачи не содержит пути к файлу")
+
+    try:
+        storage = MinIOStorage()
+        pdf_bytes = storage.download_file(bucket=BADGE_PDF_BUCKET, object_name=object_name)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Не удалось загрузить PDF из хранилища: {exc}") from exc
+
+    filename = object_name.rsplit("/", 1)[-1]
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/registrations/{competition_id}/badges-pdf")
 async def download_badges_pdf(
     competition_id: UUID,
@@ -2011,6 +2108,61 @@ async def upload_badge_photos_zip(
     }
 
 
+@router.post("/special/templates/badge/fonts/upload")
+async def upload_badge_fonts(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """Upload TTF/OTF font files (single file or ZIP) used during LibreOffice badge PDF conversion.
+
+    Fonts are stored on disk in the templates/word/fonts/ directory and are automatically
+    passed to LibreOffice when generating badge PDFs, so custom fonts like Magistral are
+    rendered correctly without requiring system-wide installation in the container.
+    """
+    word_generator = WordTemplateGenerator()
+    word_generator.ensure_templates_exist()
+    fonts_dir = word_generator.fonts_dir
+
+    filename = (file.filename or "").lower()
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Файл пустой")
+
+    imported = 0
+
+    if filename.endswith(".zip"):
+        try:
+            with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                for info in zf.infolist():
+                    if info.is_dir():
+                        continue
+                    ext = Path(info.filename).suffix.lower()
+                    if ext not in {".ttf", ".otf"}:
+                        continue
+                    font_name = Path(info.filename).name
+                    if not font_name:
+                        continue
+                    (fonts_dir / font_name).write_bytes(zf.read(info))
+                    imported += 1
+        except zipfile.BadZipFile:
+            raise HTTPException(status_code=400, detail="Некорректный ZIP-архив")
+    elif filename.endswith(".ttf") or filename.endswith(".otf"):
+        font_name = Path(file.filename or "font").name
+        (fonts_dir / font_name).write_bytes(content)
+        imported = 1
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Поддерживаются файлы .ttf, .otf или ZIP-архив с ними",
+        )
+
+    # Install fonts system-wide immediately so LibreOffice can use them
+    # on the very next badge PDF generation without requiring a restart.
+    word_generator.install_fonts_system_wide()
+
+    return {"status": "ok", "imported_files": imported}
+
+
 @router.post("/competitions/{competition_id}/special/import-participants")
 async def import_special_participants(
     competition_id: UUID,
@@ -2379,3 +2531,224 @@ async def admit_all_special_and_download(
         "X-Admit-Errors": json.dumps(admit_errors),
     }
     return StreamingResponse(zip_buffer, media_type="application/zip", headers=headers)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Badge Template endpoints (JSON-based visual editor)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/competitions/{competition_id}/badge-template")
+async def get_badge_template(
+    competition_id: UUID,
+    current_user: Annotated[Any, Depends(require_role(UserRole.ADMIN))],
+    db: AsyncSession = Depends(get_db),
+):
+    """Return badge template config for a competition (no background bytes)."""
+    result = await db.execute(
+        select(BadgeTemplateModel).where(
+            BadgeTemplateModel.competition_id == competition_id
+        )
+    )
+    tmpl = result.scalar_one_or_none()
+    if tmpl is None:
+        return {
+            "id": None,
+            "competition_id": str(competition_id),
+            "config_json": {
+                "width_mm": 90,
+                "height_mm": 120,
+                "background_w_mm": 90,
+                "background_h_mm": 120,
+                "elements": [],
+            },
+            "print_per_page": 4,
+            "has_background": False,
+            "created_at": None,
+            "updated_at": None,
+        }
+    return {
+        "id": str(tmpl.id),
+        "competition_id": str(tmpl.competition_id),
+        "config_json": tmpl.config_json,
+        "print_per_page": tmpl.print_per_page,
+        "has_background": tmpl.background_image_bytes is not None,
+        "created_at": tmpl.created_at.isoformat() if tmpl.created_at else None,
+        "updated_at": tmpl.updated_at.isoformat() if tmpl.updated_at else None,
+    }
+
+
+@router.post("/competitions/{competition_id}/badge-template", status_code=200)
+async def upsert_badge_template(
+    competition_id: UUID,
+    body: dict,
+    current_user: Annotated[Any, Depends(require_role(UserRole.ADMIN))],
+    db: AsyncSession = Depends(get_db),
+):
+    """Create or update badge template config for a competition.
+
+    Body: {config_json: {...}, print_per_page: 4|6}
+    """
+    config_json = body.get("config_json", {})
+    print_per_page = int(body.get("print_per_page", 4))
+    if print_per_page not in (4, 6):
+        print_per_page = 4
+
+    result = await db.execute(
+        select(BadgeTemplateModel).where(
+            BadgeTemplateModel.competition_id == competition_id
+        )
+    )
+    tmpl = result.scalar_one_or_none()
+
+    if tmpl is None:
+        import uuid as _uuid
+        tmpl = BadgeTemplateModel(
+            id=_uuid.uuid4(),
+            competition_id=competition_id,
+            config_json=config_json,
+            print_per_page=print_per_page,
+        )
+        db.add(tmpl)
+    else:
+        tmpl.config_json = config_json
+        tmpl.print_per_page = print_per_page
+        tmpl.updated_at = datetime.utcnow()
+
+    await db.commit()
+    await db.refresh(tmpl)
+    return {
+        "id": str(tmpl.id),
+        "competition_id": str(tmpl.competition_id),
+        "config_json": tmpl.config_json,
+        "print_per_page": tmpl.print_per_page,
+        "has_background": tmpl.background_image_bytes is not None,
+        "created_at": tmpl.created_at.isoformat() if tmpl.created_at else None,
+        "updated_at": tmpl.updated_at.isoformat() if tmpl.updated_at else None,
+    }
+
+
+@router.post("/competitions/{competition_id}/badge-template/background", status_code=200)
+async def upload_badge_template_background(
+    competition_id: UUID,
+    current_user: Annotated[Any, Depends(require_role(UserRole.ADMIN))],
+    db: AsyncSession = Depends(get_db),
+    file: UploadFile = File(...),
+):
+    """Upload a background image for the badge template."""
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Файл должен быть изображением")
+
+    img_bytes = await file.read()
+
+    result = await db.execute(
+        select(BadgeTemplateModel).where(
+            BadgeTemplateModel.competition_id == competition_id
+        )
+    )
+    tmpl = result.scalar_one_or_none()
+
+    if tmpl is None:
+        import uuid as _uuid
+        tmpl = BadgeTemplateModel(
+            id=_uuid.uuid4(),
+            competition_id=competition_id,
+            config_json={
+                "width_mm": 90,
+                "height_mm": 120,
+                "background_w_mm": 90,
+                "background_h_mm": 120,
+                "elements": [],
+            },
+            print_per_page=4,
+            background_image_bytes=img_bytes,
+        )
+        db.add(tmpl)
+    else:
+        tmpl.background_image_bytes = img_bytes
+        tmpl.updated_at = datetime.utcnow()
+
+    await db.commit()
+    return {"status": "ok", "size": len(img_bytes)}
+
+
+@router.get("/competitions/{competition_id}/badge-template/background")
+async def get_badge_template_background(
+    competition_id: UUID,
+    current_user: Annotated[Any, Depends(require_role(UserRole.ADMIN))],
+    db: AsyncSession = Depends(get_db),
+):
+    """Stream the background image bytes."""
+    result = await db.execute(
+        select(BadgeTemplateModel).where(
+            BadgeTemplateModel.competition_id == competition_id
+        )
+    )
+    tmpl = result.scalar_one_or_none()
+    if tmpl is None or not tmpl.background_image_bytes:
+        raise HTTPException(status_code=404, detail="Фоновое изображение не найдено")
+
+    return StreamingResponse(
+        io.BytesIO(tmpl.background_image_bytes),
+        media_type="image/png",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.delete("/competitions/{competition_id}/badge-template", status_code=200)
+async def delete_badge_template(
+    competition_id: UUID,
+    current_user: Annotated[Any, Depends(require_role(UserRole.ADMIN))],
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete the badge template for a competition."""
+    result = await db.execute(
+        select(BadgeTemplateModel).where(
+            BadgeTemplateModel.competition_id == competition_id
+        )
+    )
+    tmpl = result.scalar_one_or_none()
+    if tmpl is None:
+        raise HTTPException(status_code=404, detail="Шаблон не найден")
+    await db.delete(tmpl)
+    await db.commit()
+    return {"status": "deleted"}
+
+
+# ── Font serving for badge editor preview ─────────────────────────────────────
+
+_FONTS_DIR = Path(__file__).resolve().parents[5] / "templates" / "word" / "fonts"
+
+
+@router.get("/badge-fonts")
+async def list_badge_fonts(
+    current_user: Annotated[Any, Depends(require_role(UserRole.ADMIN))],
+):
+    """List available custom font filenames for badge editor."""
+    if not _FONTS_DIR.exists():
+        return []
+    return [
+        f.name
+        for f in sorted(_FONTS_DIR.iterdir())
+        if f.suffix.lower() in (".ttf", ".otf")
+    ]
+
+
+@router.get("/badge-fonts/{filename}")
+async def get_badge_font(
+    filename: str,
+    current_user: Annotated[Any, Depends(require_role(UserRole.ADMIN))],
+):
+    """Serve a custom font file for the badge editor preview."""
+    import re as _re
+    if not _re.match(r'^[\w\- ]+\.(ttf|otf)$', filename, _re.IGNORECASE):
+        raise HTTPException(status_code=400, detail="Недопустимое имя файла")
+    font_path = _FONTS_DIR / filename
+    if not font_path.exists() or font_path.parent.resolve() != _FONTS_DIR.resolve():
+        raise HTTPException(status_code=404, detail="Шрифт не найден")
+    suffix = font_path.suffix.lower()
+    media_type = "font/otf" if suffix == ".otf" else "font/ttf"
+    return StreamingResponse(
+        io.BytesIO(font_path.read_bytes()),
+        media_type=media_type,
+        headers={"Cache-Control": "public, max-age=86400"},
+    )

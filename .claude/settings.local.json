@@ -35,7 +35,20 @@
       "Bash(docker cp:*)",
       "Bash(for pw in \"admin\" \"Admin123\" \"admin123\" \"12345678\" \"password\" \"Admin12345\" \"qwerty123\")",
       "Bash(do echo \"Trying: $pw\")",
-      "Bash(done)"
+      "Bash(done)",
+      "Bash(python -m pytest --collect-only -q)",
+      "Bash(xargs grep:*)",
+      "Bash(node_modules/.bin/tsc --noEmit)",
+      "Bash(npm run:*)",
+      "Bash(cmd /c \"dir D:\\\\Projects\\\\Kafedra\\\\OQR2\\\\frontend\\\\node_modules 2>&1\")",
+      "Bash(cmd /c \"dir /b node_modules 2>&1\")",
+      "Bash(python -m py_compile \"D:/Projects/Kafedra/OQR2/backend/src/olimpqr/infrastructure/pdf/json_badge_generator.py\")",
+      "Bash(python -m py_compile \"D:/Projects/Kafedra/OQR2/backend/src/olimpqr/infrastructure/database/models/badge_template.py\")",
+      "Bash(python -m py_compile \"D:/Projects/Kafedra/OQR2/backend/alembic/versions/011_badge_template.py\")",
+      "Bash(python -m py_compile \"D:/Projects/Kafedra/OQR2/backend/src/olimpqr/infrastructure/tasks/badge_tasks.py\")",
+      "Bash(python -m py_compile \"D:/Projects/Kafedra/OQR2/backend/src/olimpqr/infrastructure/pdf/badge_template_pdf_generator.py\")",
+      "Bash(python -m py_compile \"D:/Projects/Kafedra/OQR2/backend/src/olimpqr/presentation/api/v1/admin.py\")",
+      "Bash(node:*)"
     ],
     "deny": [],
     "ask": []

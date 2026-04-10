@@ -7,7 +7,7 @@ WORKDIR /app
 ENV PIP_DEFAULT_TIMEOUT=180 \
     POETRY_REQUESTS_TIMEOUT=180
 
-# Install system dependencies (including PaddleOCR requirements)
+# Install system dependencies (including PaddleOCR requirements and LibreOffice for badge PDF)
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y \
     zbar-tools \
     libzbar0 \
     fonts-liberation \
+    libreoffice-writer \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Poetry

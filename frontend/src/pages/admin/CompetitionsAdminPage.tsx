@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
+import { useNavigate } from 'react-router-dom';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import api from '../../api/client';
@@ -27,6 +28,7 @@ type RoomLayoutState = Record<string, { seatsPerTable: number; teamSeatsPerTable
 type TeamTableMergeState = Record<string, string>;
 
 const CompetitionsAdminPage: React.FC = () => {
+  const navigate = useNavigate();
   const [competitions, setCompetitions] = useState<Competition[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -65,12 +67,18 @@ const CompetitionsAdminPage: React.FC = () => {
   const [importing, setImporting] = useState(false);
   const [admitAndDownloadLoading, setAdmitAndDownloadLoading] = useState(false);
   const [badgesDownloading, setBadgesDownloading] = useState(false);
+  const [badgeTaskId, setBadgeTaskId] = useState<string | null>(null);
+  const [badgeTaskState, setBadgeTaskState] = useState<string | null>(null);
+  const [badgeTaskProgress, setBadgeTaskProgress] = useState<{ stage: string; current: number; total: number } | null>(null);
+  const badgeTaskPollRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   const [teamTourForPrint, setTeamTourForPrint] = useState<number | null>(null);
   const [answerTemplateFile, setAnswerTemplateFile] = useState<File | null>(null);
   const [a3TemplateFile, setA3TemplateFile] = useState<File | null>(null);
   const [badgeTemplateFile, setBadgeTemplateFile] = useState<File | null>(null);
   const [badgePhotosZipFile, setBadgePhotosZipFile] = useState<File | null>(null);
   const [badgePhotosUploading, setBadgePhotosUploading] = useState(false);
+  const [badgeFontsFile, setBadgeFontsFile] = useState<File | null>(null);
+  const [badgeFontsUploading, setBadgeFontsUploading] = useState(false);
   const [templateUploadingKind, setTemplateUploadingKind] = useState<SpecialTemplateKind | null>(null);
   const [templateDownloadingKind, setTemplateDownloadingKind] = useState<SpecialTemplateKind | null>(null);
 
@@ -661,26 +669,91 @@ const CompetitionsAdminPage: React.FC = () => {
     }
   };
 
-  const handleDownloadBadges = async () => {
+  const _stopBadgePoll = () => {
+    if (badgeTaskPollRef.current) {
+      clearInterval(badgeTaskPollRef.current);
+      badgeTaskPollRef.current = null;
+    }
+  };
+
+  const handleStartBadgeGeneration = async () => {
     if (!regCompetition) return;
-    setBadgesDownloading(true);
     setError(null);
+    setBadgeTaskId(null);
+    setBadgeTaskState(null);
+    setBadgeTaskProgress(null);
+    setBadgesDownloading(true);
     try {
-      const response = await api.get(`admin/registrations/${regCompetition.id}/badges-pdf`, {
-        responseType: 'blob',
-        timeout: 300000,
-      });
-      const blob = new Blob([response.data], { type: 'application/pdf' });
-      downloadBlob(blob, `badges_${regCompetition.id}.pdf`);
+      const { data } = await api.post<{ task_id: string }>(
+        `admin/registrations/${regCompetition.id}/badges-pdf/start`
+      );
+      const taskId = data.task_id;
+      setBadgeTaskId(taskId);
+      setBadgeTaskState('PENDING');
+
+      // Poll for status every 5 seconds
+      _stopBadgePoll();
+      badgeTaskPollRef.current = setInterval(async () => {
+        try {
+          const { data: status } = await api.get<{
+            state: string;
+            status?: string;
+            stage?: string;
+            current?: number;
+            total?: number;
+            object_name?: string;
+            message?: string;
+          }>(`admin/badge-tasks/${taskId}/status`);
+
+          setBadgeTaskState(status.state);
+          if (status.state === 'PROGRESS') {
+            setBadgeTaskProgress({
+              stage: status.stage || '',
+              current: status.current ?? 0,
+              total: status.total ?? 0,
+            });
+          }
+          if (status.state === 'SUCCESS' || status.state === 'FAILURE') {
+            _stopBadgePoll();
+            setBadgesDownloading(false);
+            const innerFailed =
+              status.state === 'FAILURE' ||
+              (status.state === 'SUCCESS' && status.status === 'failed');
+            if (innerFailed) {
+              setBadgeTaskState('FAILURE');
+              setError(`Генерация бейджей завершилась с ошибкой: ${status.message || 'неизвестно'}`);
+            }
+          }
+        } catch {
+          // polling errors are transient, keep polling
+        }
+      }, 5000);
     } catch (err: unknown) {
       const message =
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
-        'Не удалось скачать бейджи PDF.';
+        'Не удалось запустить генерацию бейджей.';
       setError(message);
-    } finally {
       setBadgesDownloading(false);
     }
   };
+
+  const handleDownloadBadgePdf = async () => {
+    if (!badgeTaskId) return;
+    try {
+      const response = await api.get(`admin/badge-tasks/${badgeTaskId}/download`, {
+        responseType: 'blob',
+      });
+      downloadBlob(new Blob([response.data], { type: 'application/pdf' }), `badges_${regCompetition?.id}.pdf`);
+    } catch (err: unknown) {
+      const message =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Не удалось скачать PDF.';
+      setError(message);
+    }
+  };
+
+  // Keep for backwards compat (not used by new UI)
+  const handleDownloadBadges = handleStartBadgeGeneration;
 
   const handleOpenSeatingPlanPrint = async () => {
     if (!regCompetition) return;
@@ -839,6 +912,29 @@ const CompetitionsAdminPage: React.FC = () => {
       setError(message);
     } finally {
       setBadgePhotosUploading(false);
+    }
+  };
+
+  const handleUploadBadgeFonts = async () => {
+    if (!badgeFontsFile) return;
+    setBadgeFontsUploading(true);
+    setError(null);
+    try {
+      const form = new FormData();
+      form.append('file', badgeFontsFile);
+      const { data } = await api.post('admin/special/templates/badge/fonts/upload', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setBadgeFontsFile(null);
+      const imported = Number((data as { imported_files?: number })?.imported_files ?? 0);
+      alert(`Шрифты успешно загружены: ${imported}.`);
+    } catch (err: unknown) {
+      const message =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Не удалось загрузить шрифты.';
+      setError(message);
+    } finally {
+      setBadgeFontsUploading(false);
     }
   };
 
@@ -1306,6 +1402,11 @@ const CompetitionsAdminPage: React.FC = () => {
           setA3TemplateFile(null);
           setBadgeTemplateFile(null);
           setBadgePhotosZipFile(null);
+          _stopBadgePoll();
+          setBadgeTaskId(null);
+          setBadgeTaskState(null);
+          setBadgeTaskProgress(null);
+          setBadgesDownloading(false);
         }}
         title={`Регистрации — ${regCompetition?.name || ''}`}
       >
@@ -1315,10 +1416,41 @@ const CompetitionsAdminPage: React.FC = () => {
           <div>
             {/* Download badges button */}
             {regItems.length > 0 && (
-              <div style={{ marginBottom: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <Button variant="secondary" onClick={handleDownloadBadges} loading={badgesDownloading}>
-                  Скачать бейджи PDF
+              <div style={{ marginBottom: 16, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <Button
+                  variant="secondary"
+                  onClick={() => regCompetition && navigate(`/admin/badge-editor/${regCompetition.id}`)}
+                >
+                  Редактор бейджей
                 </Button>
+                <Button
+                  variant="secondary"
+                  onClick={handleStartBadgeGeneration}
+                  loading={badgesDownloading}
+                  disabled={badgesDownloading}
+                >
+                  {badgesDownloading ? 'Генерация бейджей…' : 'Создать PDF бейджей'}
+                </Button>
+                {badgesDownloading && !badgeTaskProgress && (
+                  <span style={{ fontSize: 13, color: 'var(--text-muted, #666)' }}>
+                    В очереди…
+                  </span>
+                )}
+                {badgesDownloading && badgeTaskProgress && (
+                  <span style={{ fontSize: 13, color: 'var(--text-muted, #666)' }}>
+                    {{
+                      loading: 'Загрузка данных…',
+                      generating: `Генерация DOCX: ${badgeTaskProgress.current} / ${badgeTaskProgress.total}`,
+                      converting: `Конвертация PDF: ${badgeTaskProgress.current} / ${badgeTaskProgress.total}`,
+                      assembling: 'Сборка страниц…',
+                    }[badgeTaskProgress.stage] ?? badgeTaskProgress.stage}
+                  </span>
+                )}
+                {badgeTaskState === 'SUCCESS' && badgeTaskId && (
+                  <Button onClick={handleDownloadBadgePdf}>
+                    Скачать PDF бейджей
+                  </Button>
+                )}
                 <Button variant="secondary" onClick={handleOpenSeatingPlanPrint}>
                   Рассадка / печать
                 </Button>
@@ -1483,6 +1615,28 @@ const CompetitionsAdminPage: React.FC = () => {
                           disabled={!badgePhotosZipFile}
                         >
                           Загрузить ZIP
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="label" style={{ marginBottom: 4, display: 'block' }}>Шрифты для бейджей (TTF/OTF)</label>
+                      <p className="text-muted" style={{ fontSize: 12, marginBottom: 6 }}>
+                        Загрузите TTF/OTF-файл или ZIP с несколькими шрифтами. LibreOffice использует их при конвертации DOCX → PDF, чтобы шрифты из шаблона (например, Magistral) отображались корректно.
+                      </p>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <input
+                          type="file"
+                          accept=".ttf,.otf,.zip"
+                          onChange={(e) => setBadgeFontsFile(e.target.files?.[0] || null)}
+                          style={{ flex: 1, minWidth: 200 }}
+                        />
+                        <Button
+                          onClick={handleUploadBadgeFonts}
+                          loading={badgeFontsUploading}
+                          disabled={!badgeFontsFile}
+                        >
+                          Загрузить шрифты
                         </Button>
                       </div>
                     </div>

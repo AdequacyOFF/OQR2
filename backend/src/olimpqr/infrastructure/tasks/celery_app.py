@@ -8,7 +8,10 @@ celery_app = Celery(
     "olimpqr",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend or settings.celery_broker_url,
-    include=["olimpqr.infrastructure.tasks.ocr_tasks"]
+    include=[
+        "olimpqr.infrastructure.tasks.ocr_tasks",
+        "olimpqr.infrastructure.tasks.badge_tasks",
+    ]
 )
 
 # Configure Celery

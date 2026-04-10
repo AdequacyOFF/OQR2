@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import io
 import re
 import shutil
@@ -37,8 +38,17 @@ class WordTemplateGenerator:
     BADGE_TEMPLATE_NAME = "badge_template.docx"
     BADGE_PHOTOS_DIR_NAME = "badge_photos"
     BADGE_PHOTO_DPI = 220
-    DOCX_TO_PDF_BATCH_SIZE = 40
-    DOCX_TO_PDF_TIMEOUT_SEC = 120
+    DOCX_TO_PDF_BATCH_SIZE = 10
+    DOCX_TO_PDF_TIMEOUT_SEC = 300
+    # Max parallel soffice workers. Each gets its own tmpdir/lo_profile.
+    DOCX_TO_PDF_MAX_WORKERS = 4
+    # Conservative per-file timeout budget (seconds). Actual batch timeout =
+    # max(DOCX_TO_PDF_TIMEOUT_SEC, batch_size * DOCX_TO_PDF_SEC_PER_FILE).
+    DOCX_TO_PDF_SEC_PER_FILE = 45
+
+    # Track which OS process has already installed custom fonts system-wide.
+    # Resets naturally on Docker restart (new PID), triggering reinstall.
+    _system_fonts_pid: int = 0
 
     def __init__(self, templates_dir: str | None = None):
         base_path = (
@@ -51,6 +61,7 @@ class WordTemplateGenerator:
         self.a3_cover_template_path = self.templates_dir / self.A3_COVER_TEMPLATE_NAME
         self.badge_template_path = self.templates_dir / self.BADGE_TEMPLATE_NAME
         self.badge_photos_dir = self.templates_dir / self.BADGE_PHOTOS_DIR_NAME
+        self.fonts_dir = self.templates_dir / "fonts"
         self.qr_service = QRService()
         self._badge_photo_index: dict[str, Path] | None = None
 
@@ -64,6 +75,7 @@ class WordTemplateGenerator:
         if not self.badge_template_path.exists():
             self._create_default_badge_template(self.badge_template_path)
         self.badge_photos_dir.mkdir(parents=True, exist_ok=True)
+        self.fonts_dir.mkdir(parents=True, exist_ok=True)
 
     def get_template_paths(self) -> dict[str, str]:
         self.ensure_templates_exist()
@@ -129,10 +141,20 @@ class WordTemplateGenerator:
         institution_name: str,
         competition_name: str,
         photo_bytes: bytes | None = None,
+        template_bytes: bytes | None = None,
     ) -> bytes:
-        """Render badge DOCX from editable template."""
-        self.ensure_templates_exist()
-        doc = Document(str(self.badge_template_path))
+        """Render badge DOCX from editable template.
+
+        Args:
+            template_bytes: Pre-loaded template bytes. When provided, skips
+                disk I/O and ``ensure_templates_exist()``. Pass this when
+                generating many badges in a loop to avoid repeated disk reads.
+        """
+        if template_bytes is not None:
+            doc = Document(io.BytesIO(template_bytes))
+        else:
+            self.ensure_templates_exist()
+            doc = Document(str(self.badge_template_path))
         participant_name = " ".join(
             part for part in [last_name, first_name, middle_name] if part
         ).strip()
@@ -219,83 +241,163 @@ class WordTemplateGenerator:
     def is_docx_to_pdf_available() -> bool:
         return shutil.which("soffice") is not None
 
+    def install_fonts_system_wide(self) -> int:
+        """Copy fonts from fonts_dir to /usr/local/share/fonts/olimpqr/ and rebuild fc-cache.
+
+        Called explicitly after font upload and lazily once per process at conversion time.
+        Returns the number of font files installed.
+        """
+        import os
+
+        if not self.fonts_dir.exists():
+            return 0
+
+        font_files = [
+            f for f in self.fonts_dir.iterdir()
+            if f.is_file() and f.suffix.lower() in {".ttf", ".otf"}
+        ]
+        if not font_files:
+            return 0
+
+        system_dir = Path("/usr/local/share/fonts/olimpqr")
+        try:
+            system_dir.mkdir(parents=True, exist_ok=True)
+            for font_file in font_files:
+                shutil.copy2(font_file, system_dir / font_file.name)
+            subprocess.run(
+                ["fc-cache", "-f", str(system_dir)],
+                capture_output=True,
+                timeout=30,
+            )
+            WordTemplateGenerator._system_fonts_pid = os.getpid()
+        except Exception:  # noqa: BLE001
+            # Non-fatal: fonts may already be available via another mechanism.
+            WordTemplateGenerator._system_fonts_pid = os.getpid()
+
+        return len(font_files)
+
+    def _ensure_system_fonts(self) -> None:
+        """Install custom fonts system-wide once per process lifetime (lazy)."""
+        import os
+
+        if WordTemplateGenerator._system_fonts_pid == os.getpid():
+            return
+        self.install_fonts_system_wide()
+
     def convert_docx_files_to_pdf(self, files: dict[str, bytes]) -> dict[str, bytes]:
-        """Convert DOCX files to PDF with batching for better stability/performance."""
+        """Convert DOCX files to PDF using parallel LibreOffice workers.
+
+        Files are split into batches; up to DOCX_TO_PDF_MAX_WORKERS batches
+        run simultaneously, each in its own isolated tmp directory and
+        LibreOffice user-profile so instances do not conflict.
+        """
         if not files:
             return {}
         soffice = shutil.which("soffice")
         if not soffice:
             raise RuntimeError("LibreOffice (soffice) is not installed")
 
+        # Ensure custom fonts are installed system-wide once per process.
+        self._ensure_system_fonts()
+
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            result: dict[str, bytes] = {}
+
+            # Build safe-named file list.
             used_safe_names: set[str] = set()
             mapped_files: list[tuple[str, str, bytes]] = []
             for name, content in files.items():
                 safe_name = self._build_unique_safe_docx_name(name=name, used=used_safe_names)
                 mapped_files.append((name, safe_name, content))
 
-            user_profile = tmp_path / "lo_profile"
-            user_profile.mkdir(parents=True, exist_ok=True)
-
+            # Split into batches.
             batch_size = max(1, self.DOCX_TO_PDF_BATCH_SIZE)
-            for start in range(0, len(mapped_files), batch_size):
-                batch = mapped_files[start : start + batch_size]
-                docx_paths: list[str] = []
-                for _, safe_name, content in batch:
-                    file_path = tmp_path / safe_name
-                    file_path.write_bytes(content)
-                    docx_paths.append(str(file_path))
+            batches = [
+                mapped_files[i : i + batch_size]
+                for i in range(0, len(mapped_files), batch_size)
+            ]
 
-                command = [
-                    soffice,
-                    "--headless",
-                    "--norestore",
-                    "--nolockcheck",
-                    "--nodefault",
-                    "--nofirststartwizard",
-                    f"-env:UserInstallation=file://{user_profile.as_posix()}",
-                    "--convert-to",
-                    "pdf:writer_pdf_Export",
-                    "--outdir",
-                    str(tmp_path),
-                    *docx_paths,
-                ]
-                try:
-                    subprocess.run(
-                        command,
-                        check=True,
-                        capture_output=True,
-                        text=True,
-                        timeout=self.DOCX_TO_PDF_TIMEOUT_SEC,
-                    )
-                except subprocess.CalledProcessError as exc:  # noqa: PERF203
-                    stderr = (exc.stderr or "").strip()
-                    stdout = (exc.stdout or "").strip()
-                    raise RuntimeError(
-                        f"DOCX->PDF conversion failed: {stderr or stdout or 'unknown error'}"
-                    ) from exc
-                except subprocess.TimeoutExpired as exc:
-                    raise RuntimeError(
-                        f"DOCX->PDF conversion timeout ({self.DOCX_TO_PDF_TIMEOUT_SEC}s) on batch starting with {batch[0][1]}"
-                    ) from exc
+            result: dict[str, bytes] = {}
 
-                for original_name, safe_name, _ in batch:
-                    pdf_path = (tmp_path / safe_name).with_suffix(".pdf")
-                    if not pdf_path.exists():
-                        raise RuntimeError(f"Converted PDF not found for {original_name}")
-                    result[original_name] = pdf_path.read_bytes()
-                    # Cleanup per-batch intermediates to keep temp dir small.
-                    try:
-                        (tmp_path / safe_name).unlink(missing_ok=True)
-                    except Exception:  # noqa: BLE001
-                        pass
-                    try:
-                        pdf_path.unlink(missing_ok=True)
-                    except Exception:  # noqa: BLE001
-                        pass
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.DOCX_TO_PDF_MAX_WORKERS
+            ) as executor:
+                future_to_batch = {
+                    executor.submit(
+                        self._run_soffice_batch,
+                        soffice,
+                        batch,
+                        tmp_path / f"worker_{wid}",
+                    ): batch
+                    for wid, batch in enumerate(batches)
+                }
+                for future in concurrent.futures.as_completed(future_to_batch):
+                    result.update(future.result())  # propagates exceptions
+
             return result
+
+    def _run_soffice_batch(
+        self,
+        soffice: str,
+        batch: list[tuple[str, str, bytes]],
+        worker_dir: Path,
+    ) -> dict[str, bytes]:
+        """Convert one batch of DOCX files to PDF in an isolated worker directory."""
+        worker_dir.mkdir(parents=True, exist_ok=True)
+        lo_profile = worker_dir / "lo_profile"
+        lo_profile.mkdir(parents=True, exist_ok=True)
+
+        docx_paths: list[str] = []
+        for _, safe_name, content in batch:
+            file_path = worker_dir / safe_name
+            file_path.write_bytes(content)
+            docx_paths.append(str(file_path))
+
+        batch_timeout = max(
+            self.DOCX_TO_PDF_TIMEOUT_SEC,
+            len(batch) * self.DOCX_TO_PDF_SEC_PER_FILE,
+        )
+
+        command = [
+            soffice,
+            "--headless",
+            "--norestore",
+            "--nolockcheck",
+            "--nodefault",
+            "--nofirststartwizard",
+            f"-env:UserInstallation=file://{lo_profile.as_posix()}",
+            "--convert-to",
+            "pdf:writer_pdf_Export",
+            "--outdir",
+            str(worker_dir),
+            *docx_paths,
+        ]
+        try:
+            subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=batch_timeout,
+            )
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or "").strip()
+            stdout = (exc.stdout or "").strip()
+            raise RuntimeError(
+                f"DOCX->PDF conversion failed: {stderr or stdout or 'unknown error'}"
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"DOCX->PDF conversion timeout ({batch_timeout}s) on batch starting with {batch[0][1]}"
+            ) from exc
+
+        result: dict[str, bytes] = {}
+        for original_name, safe_name, _ in batch:
+            pdf_path = (worker_dir / safe_name).with_suffix(".pdf")
+            if not pdf_path.exists():
+                raise RuntimeError(f"Converted PDF not found for {original_name}")
+            result[original_name] = pdf_path.read_bytes()
+        return result
 
     @staticmethod
     def _build_unique_safe_docx_name(name: str, used: set[str]) -> str:
@@ -392,6 +494,33 @@ class WordTemplateGenerator:
                 yield from part.paragraphs
                 for table in part.tables:
                     yield from self._iter_table_paragraphs(table)
+
+        # Also search tokens inside floating text boxes (w:txbxContent).
+        # Badge templates commonly use text boxes for precise element placement.
+        yield from self._iter_text_box_paragraphs(doc)
+
+    @staticmethod
+    def _iter_text_box_paragraphs(doc: Document) -> Iterable:
+        """Yield Paragraph objects inside w:txbxContent elements (floating text boxes).
+
+        python-docx does not expose text box content via its public API, so we
+        iterate the raw XML tree.  The resulting Paragraph objects are fully
+        functional for both text replacement and image insertion because the
+        underlying elements remain attached to the document XML tree and can
+        therefore resolve part relationships (needed by run.add_picture()).
+        """
+        from docx.oxml.ns import qn
+        from docx.text.paragraph import Paragraph
+        from docx.table import Table
+
+        body = doc.element.body
+        for txbx in body.iter(qn("w:txbxContent")):
+            for p_elem in txbx.findall(qn("w:p")):
+                yield Paragraph(p_elem, body)
+            for tbl_elem in txbx.findall(qn("w:tbl")):
+                yield from WordTemplateGenerator._iter_table_paragraphs(
+                    Table(tbl_elem, body)
+                )
 
     def _iter_table_paragraphs(self, table) -> Iterable:
         for row in table.rows:
