@@ -2489,9 +2489,16 @@ async def admit_all_special_and_download(
                         )
                         added_files += 1
                         for extra_i in range(1, 6):
+                            extra_docx = word_generator.generate_answer_blank(
+                                qr_payload=task_qr_payload,
+                                tour_number=tour_number,
+                                task_number=int(task_number),
+                                mode=mode_label,
+                                tour_task=f"{tour_number}/{task_number}/{extra_i}",
+                            )
                             zf.writestr(
                                 f"{task_folder}/дополнительные бланки/extra_{extra_i}.docx",
-                                task_docx,
+                                extra_docx,
                             )
                             added_files += 1
                     except Exception as exc:  # noqa: BLE001
