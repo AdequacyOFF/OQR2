@@ -4,6 +4,8 @@ from typing import Annotated, Optional
 from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import Response
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....infrastructure.database import get_db
@@ -26,8 +28,17 @@ from ...schemas.scan_schemas import (
     VerifyScoreResponse,
     ApplyScoreRequest,
     AttemptResponse,
+    ResolveQRRequest,
+    ResolveQRResponse,
+    QRScoreEntryRequest,
 )
 from ...dependencies import require_role
+from ...utils.qr_utils import (
+    normalize_sheet_token,
+    extract_attempt_id,
+    extract_a3_cover_info,
+    extract_special_tours,
+)
 from ....config import settings
 
 router = APIRouter()
@@ -206,9 +217,15 @@ async def verify_scan_score(
     if not scan:
         raise HTTPException(status_code=404, detail="Скан не найден")
 
-    # Check if scan has linked attempt
+    # If QR was not detected, allow manual attempt linking via request body
     if not scan.attempt_id:
-        raise HTTPException(status_code=400, detail="Скан не привязан к попытке. QR-код ещё не распознан.")
+        if not body.attempt_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Скан не привязан к попытке. Укажите attempt_id вручную.",
+            )
+        scan.attempt_id = body.attempt_id
+        await scan_repo.update(scan)
 
     # Verify and correct scan
     scan.verify(verified_by=current_user.id, corrected_score=body.corrected_score)
@@ -295,6 +312,146 @@ async def apply_score(
         score_total=attempt.score_total,
         confidence=attempt.confidence,
         pdf_file_path=attempt.pdf_file_path,
+        task_scores=attempt.task_scores,
+        created_at=attempt.created_at,
+        updated_at=attempt.updated_at,
+    )
+
+
+@router.post("/resolve-qr", response_model=ResolveQRResponse)
+async def resolve_qr(
+    body: ResolveQRRequest,
+    current_user: User = Depends(require_role(UserRole.SCANNER, UserRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Resolve a QR token (from A3-cover or answer sheet) to attempt + participant context.
+
+    Supports both A3-cover format (``attempt:<UUID>:tour:<N>:cover``) and regular
+    hashed sheet tokens. For A3-cover tokens the tour number is extracted automatically.
+    """
+    from ....infrastructure.database.models import (
+        RegistrationModel,
+        ParticipantModel,
+        CompetitionModel,
+    )
+    from ....domain.services import TokenService
+
+    normalized = normalize_sheet_token(body.sheet_token)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Пустой QR-токен")
+
+    attempt_repo = AttemptRepositoryImpl(db)
+    sheet_repo = AnswerSheetRepositoryImpl(db)
+    attempt = None
+    tour_number: int | None = None
+
+    # Try A3-cover format first (includes tour number)
+    cover_info = extract_a3_cover_info(normalized)
+    if cover_info:
+        attempt_id, tour_number = cover_info
+        attempt = await attempt_repo.get_by_id(attempt_id)
+    else:
+        # Try general direct attempt token
+        direct_id = extract_attempt_id(normalized)
+        if direct_id:
+            attempt = await attempt_repo.get_by_id(direct_id)
+
+    # Fall back to hashed sheet token
+    if not attempt:
+        token_service = TokenService(settings.hmac_secret_key)
+        token_hash = token_service.hash_token(normalized).value
+        answer_sheet = await sheet_repo.get_by_token_hash(token_hash)
+        if answer_sheet:
+            attempt = await attempt_repo.get_by_id(answer_sheet.attempt_id)
+        if not attempt:
+            attempt = await attempt_repo.get_by_sheet_token_hash(token_hash)
+
+    if not attempt:
+        raise HTTPException(status_code=404, detail="Участник по этому QR-коду не найден")
+
+    stmt = (
+        select(RegistrationModel)
+        .where(RegistrationModel.id == attempt.registration_id)
+        .options(
+            selectinload(RegistrationModel.participant),
+            selectinload(RegistrationModel.competition),
+        )
+    )
+    result = await db.execute(stmt)
+    registration = result.scalar_one_or_none()
+
+    if not registration or not registration.participant or not registration.competition:
+        raise HTTPException(status_code=404, detail="Не удалось найти контекст участника")
+
+    competition = registration.competition
+    task_numbers: list[int] = []
+    if tour_number is not None:
+        tours = extract_special_tours(competition)
+        for tour in tours:
+            if int(tour["tour_number"]) == tour_number:
+                task_numbers = [int(t) for t in tour["task_numbers"]]
+                break
+
+    return ResolveQRResponse(
+        attempt_id=attempt.id,
+        tour_number=tour_number,
+        participant_name=registration.participant.full_name,
+        competition_id=competition.id,
+        competition_name=competition.name,
+        is_special=bool(competition.is_special),
+        task_numbers=task_numbers,
+    )
+
+
+@router.post("/qr-score-entry", response_model=AttemptResponse)
+async def qr_score_entry(
+    body: QRScoreEntryRequest,
+    request: Request,
+    current_user: User = Depends(require_role(UserRole.SCANNER, UserRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Submit per-task scores for a specific tour of a special olympiad attempt.
+
+    Stores scores keyed by tour and task number, recomputes the total, and marks
+    the attempt as SCORED. Calling again for the same tour overwrites that tour's scores.
+    """
+    attempt_repo = AttemptRepositoryImpl(db)
+    audit_repo = AuditLogRepositoryImpl(db)
+
+    attempt = await attempt_repo.get_by_id(body.attempt_id)
+    if not attempt:
+        raise HTTPException(status_code=404, detail="Попытка не найдена")
+
+    scores_dict: dict[int, int] = {item.task_number: item.score for item in body.task_scores}
+
+    try:
+        attempt.apply_task_scores(tour_number=body.tour_number, scores=scores_dict)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    await attempt_repo.update(attempt)
+
+    audit = AuditLog.create_log(
+        entity_type="attempt",
+        entity_id=attempt.id,
+        action="task_scores_applied",
+        user_id=current_user.id,
+        ip_address=request.client.host if request.client else None,
+        tour_number=body.tour_number,
+        task_scores={item.task_number: item.score for item in body.task_scores},
+        score_total=attempt.score_total,
+    )
+    await audit_repo.create(audit)
+
+    return AttemptResponse(
+        id=attempt.id,
+        registration_id=attempt.registration_id,
+        variant_number=attempt.variant_number,
+        status=attempt.status.value,
+        score_total=attempt.score_total,
+        confidence=attempt.confidence,
+        pdf_file_path=attempt.pdf_file_path,
+        task_scores=attempt.task_scores,
         created_at=attempt.created_at,
         updated_at=attempt.updated_at,
     )

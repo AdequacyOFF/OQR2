@@ -2,11 +2,12 @@
 
 from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 
 from ....infrastructure.database import get_db
-from ....infrastructure.repositories import CompetitionRepositoryImpl
+from ....infrastructure.repositories import CompetitionRepositoryImpl, UserCompetitionAccessRepositoryImpl
 from ....application.use_cases.competitions import (
     CreateCompetitionUseCase,
     GetCompetitionUseCase,
@@ -23,8 +24,9 @@ from ...schemas.competition_schemas import (
     CompetitionListResponse
 )
 from ...dependencies import require_role, get_current_active_user
-from ....domain.entities import User
+from ....domain.entities import User, Competition
 from ....domain.value_objects import UserRole, CompetitionStatus
+from ....infrastructure.database.models import CompetitionModel
 
 
 router = APIRouter()
@@ -120,6 +122,61 @@ async def list_competitions(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
+
+
+@router.get("/my", response_model=CompetitionListResponse)
+async def list_my_competitions(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(require_role(
+        UserRole.ADMIN, UserRole.ADMITTER, UserRole.SCANNER, UserRole.INVIGILATOR
+    ))],
+):
+    """List competitions accessible to the current user.
+
+    Admins see all competitions. Staff with other roles see only competitions
+    they have been explicitly assigned to via the admin interface.
+    """
+    comp_repo = CompetitionRepositoryImpl(db)
+
+    if current_user.role == UserRole.ADMIN:
+        competitions = await comp_repo.get_all(skip=0, limit=1000)
+    else:
+        access_repo = UserCompetitionAccessRepositoryImpl(db)
+        competition_ids = await access_repo.get_competition_ids_for_user(current_user.id)
+        if not competition_ids:
+            return CompetitionListResponse(competitions=[], total=0)
+
+        result = await db.execute(
+            select(CompetitionModel).where(CompetitionModel.id.in_(competition_ids))
+        )
+        models = result.scalars().all()
+        competitions = [_model_to_competition_entity(m) for m in models]
+
+    return CompetitionListResponse(
+        competitions=[CompetitionResponse.from_entity(c) for c in competitions],
+        total=len(competitions),
+    )
+
+
+def _model_to_competition_entity(model: CompetitionModel) -> Competition:
+    """Convert CompetitionModel to Competition entity."""
+    return Competition(
+        id=model.id,
+        name=model.name,
+        date=model.date,
+        registration_start=model.registration_start,
+        registration_end=model.registration_end,
+        variants_count=model.variants_count,
+        max_score=model.max_score,
+        status=model.status,
+        created_by=model.created_by,
+        is_special=model.is_special,
+        special_tours_count=model.special_tours_count,
+        special_tour_modes=model.special_tour_modes,
+        special_settings=model.special_settings,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
 
 
 @router.get("/{competition_id}", response_model=CompetitionResponse)

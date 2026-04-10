@@ -28,6 +28,7 @@ class AttemptRepositoryImpl(AttemptRepository):
             score_total=entity.score_total,
             confidence=entity.confidence,
             pdf_file_path=entity.pdf_file_path,
+            task_scores=entity.task_scores,
             created_at=entity.created_at,
             updated_at=entity.updated_at
         )
@@ -69,6 +70,7 @@ class AttemptRepositoryImpl(AttemptRepository):
         model.score_total = entity.score_total
         model.confidence = entity.confidence
         model.pdf_file_path = entity.pdf_file_path
+        model.task_scores = entity.task_scores
         model.updated_at = entity.updated_at
 
         await self.session.flush()
@@ -131,6 +133,7 @@ class AttemptRepositoryImpl(AttemptRepository):
             score_total=model.score_total,
             confidence=model.confidence,
             pdf_file_path=model.pdf_file_path,
+            task_scores=model.task_scores,
             created_at=model.created_at,
             updated_at=model.updated_at
         )

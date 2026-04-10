@@ -18,6 +18,7 @@ import AdmissionPage from '../pages/admitter/AdmissionPage';
 // Scanner pages
 import ScansPage from '../pages/scanner/ScansPage';
 import ScanDetailPage from '../pages/scanner/ScanDetailPage';
+import ManualQRScoringPage from '../pages/scanner/ManualQRScoringPage';
 
 // Admin pages
 import AdminDashboardPage from '../pages/admin/AdminDashboardPage';
@@ -27,6 +28,7 @@ import CompetitionsAdminPage from '../pages/admin/CompetitionsAdminPage';
 import InstitutionsPage from '../pages/admin/InstitutionsPage';
 import RoomsPage from '../pages/admin/RoomsPage';
 import BadgeEditorPage from '../pages/admin/BadgeEditorPage';
+import CompetitionStaffPage from '../pages/admin/CompetitionStaffPage';
 
 // Invigilator pages
 import InvigilatorPage from '../pages/invigilator/InvigilatorPage';
@@ -142,6 +144,14 @@ const AppRouter: React.FC = () => {
             </ProtectedRoute>
           }
         />
+        <Route
+          path="/scanner/qr-score"
+          element={
+            <ProtectedRoute allowedRoles={['scanner', 'admin']}>
+              <ManualQRScoringPage />
+            </ProtectedRoute>
+          }
+        />
 
         {/* Admin routes */}
         <Route
@@ -197,6 +207,14 @@ const AppRouter: React.FC = () => {
           element={
             <ProtectedRoute allowedRoles={['admin']}>
               <BadgeEditorPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin/competitions/:id/staff"
+          element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <CompetitionStaffPage />
             </ProtectedRoute>
           }
         />

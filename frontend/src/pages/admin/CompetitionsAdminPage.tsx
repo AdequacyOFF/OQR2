@@ -1425,6 +1425,12 @@ const CompetitionsAdminPage: React.FC = () => {
                 </Button>
                 <Button
                   variant="secondary"
+                  onClick={() => regCompetition && navigate(`/admin/competitions/${regCompetition.id}/staff`)}
+                >
+                  Сотрудники
+                </Button>
+                <Button
+                  variant="secondary"
                   onClick={handleStartBadgeGeneration}
                   loading={badgesDownloading}
                   disabled={badgesDownloading}

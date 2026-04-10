@@ -2,6 +2,7 @@ import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import useAuthStore from '../../store/authStore';
 import Button from '../common/Button';
+import CompetitionSelector from '../competition/CompetitionSelector';
 import logoBlue from '../../assets/images/logo/logo_blue.png';
 
 const Header: React.FC = () => {
@@ -27,7 +28,12 @@ const Header: React.FC = () => {
       case 'admitter':
         return <Link to="/admission">Допуск</Link>;
       case 'scanner':
-        return <Link to="/scans">Сканы</Link>;
+        return (
+          <>
+            <Link to="/scans">Сканы</Link>
+            <Link to="/scanner/qr-score">Ввод баллов</Link>
+          </>
+        );
       case 'invigilator':
         return <Link to="/invigilator">Надзор</Link>;
       case 'admin':
@@ -56,6 +62,9 @@ const Header: React.FC = () => {
           {isAuthenticated ? (
             <>
               {renderNavLinks()}
+              {user && ['admitter', 'scanner', 'invigilator'].includes(user.role) && (
+                <CompetitionSelector />
+              )}
               <span className="text-muted">{user?.email}</span>
               <Button variant="secondary" onClick={handleLogout}>
                 Выйти

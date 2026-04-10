@@ -29,6 +29,7 @@ from olimpqr.infrastructure.database.models import (
     AttemptModel,
     ScanModel,
     AuditLogModel,
+    UserCompetitionAccessModel,
 )
 
 # this is the Alembic Config object, which provides

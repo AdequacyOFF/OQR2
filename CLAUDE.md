@@ -80,7 +80,7 @@ backend/src/olimpqr/
 
 ### Roles
 
-Four user roles: `ADMIN`, `ADMITTER`, `SCANNER`, `INVIGILATOR`. The `invigilator` role was added later — it grants access to `/invigilator/*` endpoints for recording participant events and issuing extra answer sheets.
+Four user roles: `ADMIN`, `ADMITTER`, `SCANNER`, `INVIGILATOR`. The `invigilate was added later — it grants access to `/invigilator/*` endpoints for recording participant events and issuing extra answer sheets.
 
 ### Key Patterns
 

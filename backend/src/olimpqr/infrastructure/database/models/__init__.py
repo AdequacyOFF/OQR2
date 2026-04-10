@@ -16,6 +16,7 @@ from .participant_event import ParticipantEventModel
 from .answer_sheet import AnswerSheetModel
 from .badge_photo import BadgePhotoModel
 from .badge_template import BadgeTemplateModel
+from .user_competition_access import UserCompetitionAccessModel
 
 __all__ = [
     "UserModel",
@@ -34,4 +35,5 @@ __all__ = [
     "AnswerSheetModel",
     "BadgePhotoModel",
     "BadgeTemplateModel",
+    "UserCompetitionAccessModel",
 ]

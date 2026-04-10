@@ -48,7 +48,19 @@
       "Bash(python -m py_compile \"D:/Projects/Kafedra/OQR2/backend/src/olimpqr/infrastructure/tasks/badge_tasks.py\")",
       "Bash(python -m py_compile \"D:/Projects/Kafedra/OQR2/backend/src/olimpqr/infrastructure/pdf/badge_template_pdf_generator.py\")",
       "Bash(python -m py_compile \"D:/Projects/Kafedra/OQR2/backend/src/olimpqr/presentation/api/v1/admin.py\")",
-      "Bash(node:*)"
+      "Bash(node:*)",
+      "Bash(python -m py_compile src/olimpqr/infrastructure/database/models/user_competition_access.py)",
+      "Bash(python -m py_compile src/olimpqr/infrastructure/database/models/attempt.py)",
+      "Bash(python -m py_compile src/olimpqr/infrastructure/repositories/user_competition_access_repository_impl.py)",
+      "Bash(python -m py_compile src/olimpqr/presentation/utils/qr_utils.py)",
+      "Bash(python -m py_compile src/olimpqr/domain/entities/attempt.py)",
+      "Bash(python -m py_compile src/olimpqr/presentation/api/v1/scans.py)",
+      "Bash(python -m py_compile src/olimpqr/presentation/api/v1/competitions.py)",
+      "Bash(python -m py_compile src/olimpqr/presentation/api/v1/admin.py)",
+      "Bash(python -m py_compile src/olimpqr/presentation/schemas/scan_schemas.py)",
+      "Bash(python -m py_compile src/olimpqr/presentation/schemas/admin_schemas.py)",
+      "Bash(cmd /c \"npx tsc --noEmit 2>&1\")",
+      "Bash(cmd:*)"
     ],
     "deny": [],
     "ask": []

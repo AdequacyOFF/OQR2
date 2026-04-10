@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Enum as SQLEnum, Float, ForeignKey, Index, Integer, String
+from sqlalchemy import Enum as SQLEnum, Float, ForeignKey, Index, Integer, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from olimpqr.domain.value_objects.attempt_status import AttemptStatus
@@ -67,6 +67,10 @@ class AttemptModel(Base):
     )
     pdf_file_path: Mapped[Optional[str]] = mapped_column(
         String(500),
+        nullable=True
+    )
+    task_scores: Mapped[Optional[dict]] = mapped_column(
+        JSON,
         nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(

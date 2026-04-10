@@ -14,6 +14,7 @@ from .seat_assignment_repository_impl import SeatAssignmentRepositoryImpl
 from .document_repository_impl import DocumentRepositoryImpl
 from .participant_event_repository_impl import ParticipantEventRepositoryImpl
 from .answer_sheet_repository_impl import AnswerSheetRepositoryImpl
+from .user_competition_access_repository_impl import UserCompetitionAccessRepositoryImpl
 
 __all__ = [
     "UserRepositoryImpl",
@@ -30,4 +31,5 @@ __all__ = [
     "DocumentRepositoryImpl",
     "ParticipantEventRepositoryImpl",
     "AnswerSheetRepositoryImpl",
+    "UserCompetitionAccessRepositoryImpl",
 ]

@@ -31,6 +31,7 @@ class Attempt:
     score_total: int | None = None
     confidence: float | None = None
     pdf_file_path: str | None = None
+    task_scores: dict | None = None
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
 
@@ -71,6 +72,36 @@ class Attempt:
         if not self.status.has_score:
             raise ValueError("Невозможно опубликовать попытку без балла")
         self.status = AttemptStatus.PUBLISHED
+        self.updated_at = datetime.utcnow()
+
+    def apply_task_scores(self, tour_number: int, scores: dict[int, int]) -> None:
+        """Apply per-task scores for a specific tour.
+
+        Updates task_scores JSON, recomputes score_total as the sum of
+        all task scores across all tours, and marks the attempt as SCORED.
+
+        Args:
+            tour_number: Tour number (1-based)
+            scores: Mapping of task_number -> score for this tour
+        """
+        if tour_number < 1:
+            raise ValueError("Номер тура должен быть положительным")
+        for task_num, score in scores.items():
+            if score < 0:
+                raise ValueError(f"Балл за задание {task_num} не может быть отрицательным")
+
+        current = dict(self.task_scores) if self.task_scores else {}
+        current[str(tour_number)] = {str(k): v for k, v in scores.items()}
+        self.task_scores = current
+
+        # Recompute total across all tours and tasks
+        total = sum(
+            score
+            for tour_data in current.values()
+            for score in tour_data.values()
+        )
+        self.score_total = total
+        self.status = AttemptStatus.SCORED
         self.updated_at = datetime.utcnow()
 
     def invalidate(self):

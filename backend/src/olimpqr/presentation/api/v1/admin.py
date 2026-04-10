@@ -32,6 +32,7 @@ from ....infrastructure.repositories import (
     AnswerSheetRepositoryImpl,
     RoomRepositoryImpl,
     SeatAssignmentRepositoryImpl,
+    UserCompetitionAccessRepositoryImpl,
 )
 from ....infrastructure.security import hash_password
 from ....infrastructure.storage import MinIOStorage
@@ -57,6 +58,9 @@ from ...schemas.admin_schemas import (
     AdminRegisterResponse,
     AdminRegistrationItem,
     AdminRegistrationListResponse,
+    AssignStaffRequest,
+    CompetitionStaffItem,
+    CompetitionStaffList,
 )
 from ...dependencies import require_role
 
@@ -2766,3 +2770,87 @@ async def get_badge_font(
         media_type=media_type,
         headers={"Cache-Control": "public, max-age=86400"},
     )
+
+
+# --- Competition Staff Access Management ---
+
+@router.get("/competitions/{competition_id}/staff", response_model=CompetitionStaffList)
+async def list_competition_staff(
+    competition_id: UUID,
+    current_user: Annotated[User, Depends(require_role(UserRole.ADMIN))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """List all staff users assigned to a competition."""
+    access_repo = UserCompetitionAccessRepositoryImpl(db)
+    user_repo = UserRepositoryImpl(db)
+
+    comp_repo = CompetitionRepositoryImpl(db)
+    competition = await comp_repo.get_by_id(competition_id)
+    if not competition:
+        raise HTTPException(status_code=404, detail="Олимпиада не найдена")
+
+    assignments = await access_repo.get_users_for_competition(competition_id)
+    items: list[CompetitionStaffItem] = []
+    for assignment in assignments:
+        user = await user_repo.get_by_id(assignment.user_id)
+        if user:
+            items.append(
+                CompetitionStaffItem(
+                    user_id=user.id,
+                    email=user.email,
+                    role=user.role,
+                    assigned_at=assignment.assigned_at,
+                )
+            )
+    return CompetitionStaffList(items=items, total=len(items))
+
+
+@router.post("/competitions/{competition_id}/staff", response_model=CompetitionStaffItem, status_code=status.HTTP_201_CREATED)
+async def assign_competition_staff(
+    competition_id: UUID,
+    body: AssignStaffRequest,
+    current_user: Annotated[User, Depends(require_role(UserRole.ADMIN))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Assign a staff user (ADMITTER/SCANNER/INVIGILATOR) to a competition."""
+    comp_repo = CompetitionRepositoryImpl(db)
+    competition = await comp_repo.get_by_id(competition_id)
+    if not competition:
+        raise HTTPException(status_code=404, detail="Олимпиада не найдена")
+
+    user_repo = UserRepositoryImpl(db)
+    user = await user_repo.get_by_id(body.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    if not user.role.is_staff or user.role == UserRole.ADMIN:
+        raise HTTPException(
+            status_code=400,
+            detail="Доступ можно выдать только пользователям с ролью ADMITTER, SCANNER или INVIGILATOR",
+        )
+
+    access_repo = UserCompetitionAccessRepositoryImpl(db)
+    assignment = await access_repo.assign(
+        user_id=user.id,
+        competition_id=competition_id,
+        assigned_by=current_user.id,
+    )
+    return CompetitionStaffItem(
+        user_id=user.id,
+        email=user.email,
+        role=user.role,
+        assigned_at=assignment.assigned_at,
+    )
+
+
+@router.delete("/competitions/{competition_id}/staff/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_competition_staff(
+    competition_id: UUID,
+    user_id: UUID,
+    current_user: Annotated[User, Depends(require_role(UserRole.ADMIN))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Revoke a staff user's access to a competition."""
+    access_repo = UserCompetitionAccessRepositoryImpl(db)
+    deleted = await access_repo.revoke(user_id=user_id, competition_id=competition_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Назначение не найдено")

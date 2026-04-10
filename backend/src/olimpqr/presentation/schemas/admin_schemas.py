@@ -102,3 +102,22 @@ class AdminRegistrationListResponse(BaseModel):
     """Paginated list of registrations for a competition."""
     items: list[AdminRegistrationItem]
     total: int
+
+
+class AssignStaffRequest(BaseModel):
+    """Assign a staff user to a competition."""
+    user_id: UUID
+
+
+class CompetitionStaffItem(BaseModel):
+    """Staff member assigned to a competition."""
+    user_id: UUID
+    email: str
+    role: UserRole
+    assigned_at: datetime
+
+
+class CompetitionStaffList(BaseModel):
+    """List of staff assigned to a competition."""
+    items: list[CompetitionStaffItem]
+    total: int

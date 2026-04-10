@@ -34,6 +34,7 @@ const ScanDetailPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [correctedScore, setCorrectedScore] = useState<string>('');
+  const [manualAttemptId, setManualAttemptId] = useState<string>('');
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [events, setEvents] = useState<ParticipantEvent[]>([]);
   const [answerSheets, setAnswerSheets] = useState<AnswerSheetInfo[]>([]);
@@ -93,9 +94,13 @@ const ScanDetailPage: React.FC = () => {
     setSuccess(null);
 
     try {
-      const { data } = await api.post(`scans/${scan.id}/verify`, {
+      const payload: { corrected_score: number; attempt_id?: string } = {
         corrected_score: Number(correctedScore),
-      });
+      };
+      if (!scan.attempt_id && manualAttemptId.trim()) {
+        payload.attempt_id = manualAttemptId.trim();
+      }
+      const { data } = await api.post(`scans/${scan.id}/verify`, payload);
       setScan(data);
       setSuccess('Скан успешно подтверждён.');
     } catch (err: unknown) {
@@ -149,14 +154,22 @@ const ScanDetailPage: React.FC = () => {
             </tr>
             <tr>
               <td><strong>Балл OCR</strong></td>
-              <td>{scan.ocr_score !== null ? scan.ocr_score : 'Обрабатывается'}</td>
+              <td>
+                {scan.ocr_raw_text === null
+                  ? 'Обрабатывается...'
+                  : scan.ocr_score !== null
+                    ? scan.ocr_score
+                    : 'Не найден'}
+              </td>
             </tr>
             <tr>
               <td><strong>Точность OCR</strong></td>
               <td>
-                {scan.ocr_confidence !== null
-                  ? `${(scan.ocr_confidence * 100).toFixed(1)}%`
-                  : 'Обрабатывается'}
+                {scan.ocr_raw_text === null
+                  ? 'Обрабатывается...'
+                  : scan.ocr_confidence !== null
+                    ? `${(scan.ocr_confidence * 100).toFixed(1)}%`
+                    : '—'}
               </td>
             </tr>
             <tr>
@@ -269,6 +282,20 @@ const ScanDetailPage: React.FC = () => {
       {!scan.verified_by && (
         <div className="card">
           <h2 className="mb-16">Подтвердить балл</h2>
+          {!scan.attempt_id && (
+            <div className="alert alert-error mb-16" style={{ fontSize: 13 }}>
+              QR-код не распознан. Укажите ID попытки вручную, чтобы привязать скан.
+            </div>
+          )}
+          {!scan.attempt_id && (
+            <Input
+              label="ID попытки (attempt_id)"
+              type="text"
+              value={manualAttemptId}
+              onChange={(e) => setManualAttemptId(e.target.value)}
+              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+            />
+          )}
           <Input
             label="Исправленный балл"
             type="number"
