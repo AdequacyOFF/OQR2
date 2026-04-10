@@ -27,6 +27,40 @@ type SpecialTemplateKind = 'answer_blank' | 'a3_cover' | 'badge';
 type RoomLayoutState = Record<string, { seatsPerTable: number; teamSeatsPerTable: number; seatMatrixColumns: number }>;
 type TeamTableMergeState = Record<string, string>;
 
+const Tooltip: React.FC<{ text: string; children: React.ReactNode }> = ({ text, children }) => {
+  const [show, setShow] = React.useState(false);
+  return (
+    <span
+      style={{ position: 'relative', display: 'inline-block' }}
+      onMouseEnter={() => setShow(true)}
+      onMouseLeave={() => setShow(false)}
+    >
+      {children}
+      {show && (
+        <span
+          style={{
+            position: 'absolute',
+            bottom: 'calc(100% + 4px)',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            background: '#1f2937',
+            color: '#fff',
+            padding: '4px 8px',
+            borderRadius: 4,
+            fontSize: 11,
+            whiteSpace: 'nowrap',
+            zIndex: 1000,
+            pointerEvents: 'none',
+            boxShadow: '0 2px 6px rgba(0,0,0,0.25)',
+          }}
+        >
+          {text}
+        </span>
+      )}
+    </span>
+  );
+};
+
 const CompetitionsAdminPage: React.FC = () => {
   const navigate = useNavigate();
   const [competitions, setCompetitions] = useState<Competition[]>([]);
@@ -90,6 +124,20 @@ const CompetitionsAdminPage: React.FC = () => {
   const [replaceSearch, setReplaceSearch] = useState('');
   const [replacing, setReplacing] = useState(false);
   const [downloadingRegId, setDownloadingRegId] = useState<string | null>(null);
+
+  // Edit participant fields
+  const [editParticipantId, setEditParticipantId] = useState<string | null>(null);
+  const [editInstLocation, setEditInstLocation] = useState('');
+  const [editInstId, setEditInstId] = useState('');
+  const [editInstSearch, setEditInstSearch] = useState('');
+  const [instSearchResults, setInstSearchResults] = useState<{id: string; name: string; city?: string}[]>([]);
+  const [savingParticipant, setSavingParticipant] = useState(false);
+
+  // Per-participant photo upload
+  const [photoUploadRegId, setPhotoUploadRegId] = useState<string | null>(null);
+  const [photoUploadParticipantId, setPhotoUploadParticipantId] = useState<string | null>(null);
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
   const {
     register,
@@ -724,6 +772,64 @@ const CompetitionsAdminPage: React.FC = () => {
       setError(message);
     } finally {
       setDownloadingRegId(null);
+    }
+  };
+
+  const searchInstitutions = async (q: string) => {
+    if (!q.trim()) { setInstSearchResults([]); return; }
+    try {
+      const res = await api.get<{id: string; name: string; city?: string}[]>(`institutions/search?q=${encodeURIComponent(q)}&limit=10`);
+      setInstSearchResults(res.data || []);
+    } catch { setInstSearchResults([]); }
+  };
+
+  const handleSaveParticipantFields = async () => {
+    if (!editParticipantId) return;
+    setSavingParticipant(true);
+    setError(null);
+    try {
+      const params = new URLSearchParams();
+      if (editInstLocation !== '') params.append('institution_location', editInstLocation);
+      if (editInstId) params.append('institution_id', editInstId);
+      await api.patch(`admin/participants/${editParticipantId}?${params.toString()}`);
+      // Reload registrations to show updated info
+      if (regCompetition) {
+        const regRes = await api.get<{ items: AdminRegistrationItem[]; total: number }>(
+          `admin/registrations/${regCompetition.id}`
+        );
+        setRegItems(regRes.data.items || []);
+      }
+      setEditParticipantId(null);
+    } catch (err: unknown) {
+      const message =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Ошибка сохранения.';
+      setError(message);
+    } finally {
+      setSavingParticipant(false);
+    }
+  };
+
+  const handleUploadParticipantPhoto = async () => {
+    if (!photoUploadParticipantId || !photoFile) return;
+    setUploadingPhoto(true);
+    setError(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', photoFile);
+      await api.post(`admin/participants/${photoUploadParticipantId}/badge-photo`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setPhotoUploadRegId(null);
+      setPhotoUploadParticipantId(null);
+      setPhotoFile(null);
+    } catch (err: unknown) {
+      const message =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Ошибка загрузки фото.';
+      setError(message);
+    } finally {
+      setUploadingPhoto(false);
     }
   };
 
@@ -1856,6 +1962,72 @@ const CompetitionsAdminPage: React.FC = () => {
               </div>
             )}
 
+            {/* Edit participant fields panel */}
+            {editParticipantId && (
+              <div style={{ background: '#fafaf5', border: '1px solid #d1d5db', borderRadius: 8, padding: 16, marginBottom: 16 }}>
+                <p style={{ margin: '0 0 8px', fontWeight: 600 }}>Редактировать поля участника:</p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <label style={{ fontSize: 13 }}>Город / Филиал</label>
+                  <input
+                    type="text"
+                    value={editInstLocation}
+                    onChange={(e) => setEditInstLocation(e.target.value)}
+                    placeholder="Например: Москва"
+                    style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 13 }}
+                  />
+                  <label style={{ fontSize: 13 }}>Учреждение (поиск по названию)</label>
+                  <input
+                    type="text"
+                    value={editInstSearch}
+                    onChange={(e) => { setEditInstSearch(e.target.value); searchInstitutions(e.target.value); }}
+                    placeholder="Начните вводить название..."
+                    style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 13 }}
+                  />
+                  {instSearchResults.length > 0 && (
+                    <div style={{ border: '1px solid #e5e7eb', borderRadius: 6, maxHeight: 120, overflowY: 'auto' }}>
+                      {instSearchResults.map((inst) => (
+                        <div
+                          key={inst.id}
+                          onClick={() => { setEditInstId(inst.id); setEditInstSearch(inst.name); setInstSearchResults([]); }}
+                          style={{ padding: '6px 10px', cursor: 'pointer', fontSize: 13, borderBottom: '1px solid #f3f4f6', background: editInstId === inst.id ? '#eff6ff' : 'white' }}
+                        >
+                          {inst.name}{inst.city ? ` (${inst.city})` : ''}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {editInstId && (
+                    <div style={{ fontSize: 12, color: '#6b7280' }}>
+                      Выбрано учреждение (ID: {editInstId.slice(0, 8)}…)
+                      <button onClick={() => { setEditInstId(''); setEditInstSearch(''); }} style={{ marginLeft: 6, background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', fontSize: 12 }}>✕</button>
+                    </div>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <Button variant="secondary" onClick={() => { setEditParticipantId(null); setEditInstId(''); setEditInstSearch(''); setEditInstLocation(''); }}>Отмена</Button>
+                  <Button onClick={handleSaveParticipantFields} loading={savingParticipant}>Сохранить</Button>
+                </div>
+              </div>
+            )}
+
+            {/* Photo upload panel */}
+            {photoUploadRegId && (
+              <div style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 8, padding: 16, marginBottom: 16 }}>
+                <p style={{ margin: '0 0 8px', fontWeight: 600 }}>Загрузить фото для бейджа:</p>
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  onChange={(e) => setPhotoFile(e.target.files?.[0] || null)}
+                  style={{ fontSize: 13, marginBottom: 8, display: 'block' }}
+                />
+                {photoFile && <p style={{ margin: '0 0 8px', fontSize: 12, color: '#555' }}>{photoFile.name}</p>}
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <Button variant="secondary" onClick={() => { setPhotoUploadRegId(null); setPhotoUploadParticipantId(null); setPhotoFile(null); }}>Отмена</Button>
+                  <Button onClick={handleUploadParticipantPhoto} loading={uploadingPhoto} disabled={!photoFile}>Загрузить</Button>
+                </div>
+              </div>
+            )}
+
             {/* Registrations table */}
             {regItems.length > 0 ? (
               <div style={{ maxHeight: 340, overflowY: 'auto', marginBottom: 24 }}>
@@ -1881,56 +2053,91 @@ const CompetitionsAdminPage: React.FC = () => {
                         <td>{item.institution_name || '—'}</td>
                         <td>{getRegStatusLabel(item.status)}</td>
                         <td style={{ whiteSpace: 'nowrap' }}>
-                          <button
-                            title="Допустить и скачать бланки + бейдж"
-                            onClick={() => handleAdmitAndDownload(item.registration_id, item.participant_name)}
-                            disabled={downloadingRegId === item.registration_id}
-                            style={{
-                              background: 'none',
-                              border: 'none',
-                              cursor: downloadingRegId === item.registration_id ? 'default' : 'pointer',
-                              color: '#16a34a',
-                              fontSize: 15,
-                              padding: '2px 6px',
-                              marginRight: 2,
-                              opacity: downloadingRegId === item.registration_id ? 0.5 : 1,
-                            }}
-                          >
-                            {downloadingRegId === item.registration_id ? '…' : '↓'}
-                          </button>
-                          <button
-                            title="Заменить участника"
-                            onClick={() => { setReplaceRegId(item.registration_id); setReplaceSearch(''); setDeleteConfirmId(null); }}
-                            style={{
-                              background: 'none',
-                              border: 'none',
-                              cursor: 'pointer',
-                              color: '#2563eb',
-                              fontSize: 15,
-                              padding: '2px 6px',
-                              marginRight: 2,
-                            }}
-                          >
-                            ⇄
-                          </button>
-                          <button
-                            title="Удалить регистрацию"
-                            onClick={() => {
-                              setDeleteConfirmId(item.registration_id);
-                              setDeleteConfirmName(item.participant_name);
-                              setReplaceRegId(null);
-                            }}
-                            style={{
-                              background: 'none',
-                              border: 'none',
-                              cursor: 'pointer',
-                              color: '#dc2626',
-                              fontSize: 15,
-                              padding: '2px 6px',
-                            }}
-                          >
-                            ✕
-                          </button>
+                          <Tooltip text="Допустить и скачать бланки + бейдж">
+                            <button
+                              onClick={() => handleAdmitAndDownload(item.registration_id, item.participant_name)}
+                              disabled={downloadingRegId === item.registration_id}
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                cursor: downloadingRegId === item.registration_id ? 'default' : 'pointer',
+                                color: '#16a34a',
+                                fontSize: 15,
+                                padding: '2px 6px',
+                                marginRight: 2,
+                                opacity: downloadingRegId === item.registration_id ? 0.5 : 1,
+                              }}
+                            >
+                              {downloadingRegId === item.registration_id ? '…' : '↓'}
+                            </button>
+                          </Tooltip>
+                          <Tooltip text="Заменить участника">
+                            <button
+                              onClick={() => { setReplaceRegId(item.registration_id); setReplaceSearch(''); setDeleteConfirmId(null); }}
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                cursor: 'pointer',
+                                color: '#2563eb',
+                                fontSize: 15,
+                                padding: '2px 6px',
+                                marginRight: 2,
+                              }}
+                            >
+                              ⇄
+                            </button>
+                          </Tooltip>
+                          <Tooltip text="Удалить регистрацию">
+                            <button
+                              onClick={() => {
+                                setDeleteConfirmId(item.registration_id);
+                                setDeleteConfirmName(item.participant_name);
+                                setReplaceRegId(null);
+                              }}
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                cursor: 'pointer',
+                                color: '#dc2626',
+                                fontSize: 15,
+                                padding: '2px 6px',
+                              }}
+                            >
+                              ✕
+                            </button>
+                          </Tooltip>
+                          <Tooltip text="Редактировать город/учреждение">
+                            <button
+                              onClick={() => {
+                                setEditParticipantId(item.participant_id);
+                                setEditInstLocation(item.participant_institution_location || '');
+                                setEditInstId('');
+                                setEditInstSearch(item.institution_name || '');
+                                setInstSearchResults([]);
+                                setDeleteConfirmId(null);
+                                setReplaceRegId(null);
+                                setPhotoUploadRegId(null);
+                              }}
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#7c3aed', fontSize: 15, padding: '2px 6px' }}
+                            >
+                              ✎
+                            </button>
+                          </Tooltip>
+                          <Tooltip text="Загрузить фото для бейджа">
+                            <button
+                              onClick={() => {
+                                setPhotoUploadRegId(item.registration_id);
+                                setPhotoUploadParticipantId(item.participant_id);
+                                setPhotoFile(null);
+                                setEditParticipantId(null);
+                                setDeleteConfirmId(null);
+                                setReplaceRegId(null);
+                              }}
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#0891b2', fontSize: 15, padding: '2px 6px' }}
+                            >
+                              ☷
+                            </button>
+                          </Tooltip>
                         </td>
                       </tr>
                     ))}

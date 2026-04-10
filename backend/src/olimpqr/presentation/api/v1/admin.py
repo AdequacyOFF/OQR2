@@ -15,7 +15,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import selectinload
 
 from ....infrastructure.database import get_db
@@ -1046,6 +1046,89 @@ async def list_participants(
     }
 
 
+@router.patch("/participants/{participant_id}")
+async def update_participant_fields(
+    participant_id: UUID,
+    institution_location: Optional[str] = None,
+    institution_id: Optional[UUID] = None,
+    clear_institution: bool = False,
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update institution_location and/or institution_id for a participant."""
+    from ....infrastructure.database.models import ParticipantModel
+
+    result = await db.execute(select(ParticipantModel).where(ParticipantModel.id == participant_id))
+    model = result.scalar_one_or_none()
+    if not model:
+        raise HTTPException(status_code=404, detail="Участник не найден")
+
+    if institution_location is not None:
+        model.institution_location = institution_location or None
+    if institution_id is not None:
+        model.institution_id = institution_id
+    if clear_institution:
+        model.institution_id = None
+
+    await db.flush()
+    return {
+        "id": str(model.id),
+        "full_name": model.full_name,
+        "institution_location": model.institution_location,
+        "institution_id": str(model.institution_id) if model.institution_id else None,
+    }
+
+
+@router.post("/participants/{participant_id}/badge-photo")
+async def upload_participant_badge_photo(
+    participant_id: UUID,
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a badge photo for a specific participant. Overwrites any existing photo for them."""
+    from ....infrastructure.database.models import ParticipantModel, BadgePhotoModel
+
+    result = await db.execute(
+        select(ParticipantModel)
+        .where(ParticipantModel.id == participant_id)
+        .options(selectinload(ParticipantModel.institution))
+    )
+    participant = result.scalar_one_or_none()
+    if not participant:
+        raise HTTPException(status_code=404, detail="Участник не найден")
+
+    image_bytes = await file.read()
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="Файл пустой")
+
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+    allowed = {"jpg", "jpeg", "png", "webp"}
+    if ext not in allowed:
+        raise HTTPException(status_code=400, detail="Допустимые форматы: JPG, PNG, WEBP")
+    content_type = f"image/{ext}" if ext != "jpg" else "image/jpeg"
+
+    last_name, first_name, middle_name = _split_full_name(participant.full_name)
+    fio = "_".join(p for p in [last_name, first_name, middle_name] if p)
+    institution_name = participant.institution.name if participant.institution else ""
+    city = participant.institution_location or ""
+
+    normalize = WordTemplateGenerator._normalize_photo_key  # type: ignore[attr-defined]
+    normalized_key = normalize(f"{city}/{institution_name}/{fio}")
+    original_path = f"{city}/{institution_name}/{fio}.{ext}"
+
+    # Upsert: delete existing record with same key, then insert
+    await db.execute(delete(BadgePhotoModel).where(BadgePhotoModel.normalized_key == normalized_key))
+    db.add(BadgePhotoModel(
+        normalized_key=normalized_key,
+        original_path=original_path,
+        content_type=content_type,
+        image_bytes=image_bytes,
+    ))
+    await db.flush()
+    return {"ok": True, "normalized_key": normalized_key}
+
+
 # --- Audit Log ---
 
 @router.get("/audit-log", response_model=AuditLogListResponse)
@@ -1275,16 +1358,32 @@ async def admit_and_download_single(
     if not competition:
         raise HTTPException(status_code=404, detail="Олимпиада не найдена")
 
-    # Admit if still pending
-    if reg.status.value == "pending":
+    attempt_repo = AttemptRepositoryImpl(db)
+
+    # Try to get existing attempt first (bypasses caching issues)
+    attempt = await attempt_repo.get_by_registration(registration_id)
+
+    if attempt is None and reg.status.value == "pending":
         if not reg.entry_token or not reg.entry_token.raw_token:
             raise HTTPException(status_code=400, detail="У регистрации отсутствует entry token")
+
+        # Admin bypass: extend expired token so ApproveAdmissionUseCase can proceed
+        if reg.entry_token.is_expired:
+            from ....infrastructure.database.models import EntryTokenModel
+            from datetime import timedelta
+            await db.execute(
+                update(EntryTokenModel)
+                .where(EntryTokenModel.id == reg.entry_token.id)
+                .values(expires_at=datetime.utcnow() + timedelta(hours=2))
+            )
+            await db.flush()
+
         approve_uc = ApproveAdmissionUseCase(
             token_service=TokenService(settings.hmac_secret_key),
             entry_token_repository=EntryTokenRepositoryImpl(db),
             registration_repository=RegistrationRepositoryImpl(db),
             competition_repository=competition_repo,
-            attempt_repository=AttemptRepositoryImpl(db),
+            attempt_repository=attempt_repo,
             audit_log_repository=AuditLogRepositoryImpl(db),
             answer_sheet_repository=AnswerSheetRepositoryImpl(db),
             storage=MinIOStorage(),
@@ -1303,16 +1402,15 @@ async def admit_and_download_single(
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Ошибка допуска: {exc}")
 
-        # Reload registration after admission
-        result = await db.execute(stmt)
-        reg = result.scalar_one_or_none()
-        if not reg:
-            raise HTTPException(status_code=404, detail="Регистрация не найдена после допуска")
+        # Query attempt directly — avoids SQLAlchemy identity-map stale cache
+        attempt = await attempt_repo.get_by_registration(registration_id)
 
-    if not reg.attempts:
-        raise HTTPException(status_code=400, detail="У участника нет попытки. Допустите его сначала через стойку регистрации.")
+    if attempt is None:
+        raise HTTPException(
+            status_code=400,
+            detail="У участника нет попытки. Зарегистрируйте его через эту панель (кнопка ↓) или через стойку регистрации.",
+        )
 
-    attempt = reg.attempts[0]
     folder = _slugify_folder_name(f"{participant.full_name}")
 
     zip_buffer = BytesIO()
