@@ -79,11 +79,13 @@ class RegistrationModel(Base):
     entry_token: Mapped["EntryTokenModel"] = relationship(
         "EntryTokenModel",
         back_populates="registration",
-        uselist=False
+        uselist=False,
+        passive_deletes=True,
     )
     attempts: Mapped[list["AttemptModel"]] = relationship(
         "AttemptModel",
-        back_populates="registration"
+        back_populates="registration",
+        passive_deletes=True,
     )
 
     def __repr__(self) -> str:

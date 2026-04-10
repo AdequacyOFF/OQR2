@@ -60,7 +60,8 @@
       "Bash(python -m py_compile src/olimpqr/presentation/schemas/scan_schemas.py)",
       "Bash(python -m py_compile src/olimpqr/presentation/schemas/admin_schemas.py)",
       "Bash(cmd /c \"npx tsc --noEmit 2>&1\")",
-      "Bash(cmd:*)"
+      "Bash(cmd:*)",
+      "Bash(grep -n \"def generate_badge_docx\\\\|def generate_a3_cover\\\\|def generate_answer_blank\" D:/Projects/Kafedra/OQR2/backend/src/olimpqr/infrastructure/docx/*.py)"
     ],
     "deny": [],
     "ask": []

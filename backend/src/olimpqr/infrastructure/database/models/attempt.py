@@ -91,7 +91,8 @@ class AttemptModel(Base):
     )
     scans: Mapped[list["ScanModel"]] = relationship(
         "ScanModel",
-        back_populates="attempt"
+        back_populates="attempt",
+        passive_deletes=True,
     )
 
     def __repr__(self) -> str:
