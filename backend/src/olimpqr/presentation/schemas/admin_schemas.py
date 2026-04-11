@@ -130,6 +130,20 @@ class TourProgress(BaseModel):
     tour_total: Optional[int] = None
 
 
+class TourTimeItem(BaseModel):
+    """Start/finish times for a single tour of a competition."""
+    tour_number: int
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    duration_minutes: Optional[int] = None
+
+
+class SetTourTimeRequest(BaseModel):
+    """Request body for setting tour start/finish times."""
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+
+
 class ScoringProgressItem(BaseModel):
     """Single participant scoring status for admin/scanner progress table."""
     registration_id: UUID
@@ -151,6 +165,7 @@ class ScoringProgressResponse(BaseModel):
     tours_count: int
     items: list["ScoringProgressItem"]
     total: int
+    tour_times: list[TourTimeItem] = []
 
 
 class AssignStaffRequest(BaseModel):

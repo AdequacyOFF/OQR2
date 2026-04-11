@@ -19,6 +19,7 @@ import AdmissionPage from '../pages/admitter/AdmissionPage';
 import ScansPage from '../pages/scanner/ScansPage';
 import ScanDetailPage from '../pages/scanner/ScanDetailPage';
 import ManualQRScoringPage from '../pages/scanner/ManualQRScoringPage';
+import ScannerResultsPage from '../pages/scanner/ScannerResultsPage';
 
 // Admin pages
 import AdminDashboardPage from '../pages/admin/AdminDashboardPage';
@@ -149,6 +150,14 @@ const AppRouter: React.FC = () => {
           element={
             <ProtectedRoute allowedRoles={['scanner', 'admin']}>
               <ManualQRScoringPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/scanner/results"
+          element={
+            <ProtectedRoute allowedRoles={['scanner', 'admin']}>
+              <ScannerResultsPage />
             </ProtectedRoute>
           }
         />

@@ -181,6 +181,13 @@ export interface ScoringProgressItem {
   score_total: number | null;
 }
 
+export interface TourTimeItem {
+  tour_number: number;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_minutes: number | null;
+}
+
 export interface ScoringProgressResponse {
   competition_id: string;
   competition_name: string;
@@ -188,5 +195,6 @@ export interface ScoringProgressResponse {
   tours_count: number;
   items: ScoringProgressItem[];
   total: number;
+  tour_times: TourTimeItem[];
 }
 

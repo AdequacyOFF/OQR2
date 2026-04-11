@@ -1,17 +1,19 @@
 import React, { useEffect, useRef, useState } from 'react';
 import api from '../api/client';
-import { ScoringProgressResponse } from '../types';
+import { ScoringProgressResponse, TourTimeItem } from '../types';
 
 interface Props {
   competitionId: string;
   highlightAttemptId?: string;
   refreshTrigger: number;
+  onTourTimesLoaded?: (tourTimes: TourTimeItem[]) => void;
 }
 
 const ScoringProgressTable: React.FC<Props> = ({
   competitionId,
   highlightAttemptId,
   refreshTrigger,
+  onTourTimesLoaded,
 }) => {
   const [data, setData] = useState<ScoringProgressResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -26,6 +28,9 @@ const ScoringProgressTable: React.FC<Props> = ({
         `admin/competitions/${competitionId}/scoring-progress`
       );
       setData(res);
+      if (onTourTimesLoaded && res.tour_times) {
+        onTourTimesLoaded(res.tour_times);
+      }
     } catch (e: any) {
       setError(e?.response?.data?.detail ?? 'Ошибка загрузки данных');
     } finally {
@@ -73,6 +78,12 @@ const ScoringProgressTable: React.FC<Props> = ({
     ? Array.from({ length: data.tours_count }, (_, i) => i + 1)
     : [];
 
+  // Build lookup: tour_number → TourTimeItem
+  const tourTimeMap: Record<number, TourTimeItem> = {};
+  for (const tt of (data.tour_times ?? [])) {
+    tourTimeMap[tt.tour_number] = tt;
+  }
+
   return (
     <div style={{ overflowX: 'auto' }}>
       {/* Header */}
@@ -114,11 +125,19 @@ const ScoringProgressTable: React.FC<Props> = ({
             <th style={thStyle}>Участник</th>
             <th style={thStyle}>Школа</th>
             <th style={{ ...thStyle, textAlign: 'center' }}>Вар.</th>
-            {data.is_special && tourColumns.map((t) => (
-              <th key={t} style={{ ...thStyle, textAlign: 'center' }}>
-                Тур {t}
-              </th>
-            ))}
+            {data.is_special && tourColumns.map((t) => {
+              const tt = tourTimeMap[t];
+              return (
+                <th key={t} style={{ ...thStyle, textAlign: 'center' }}>
+                  <div>Тур {t}</div>
+                  {tt?.duration_minutes != null && (
+                    <div style={{ fontSize: 10, fontWeight: 400, color: '#6b7280' }}>
+                      {tt.duration_minutes} мин
+                    </div>
+                  )}
+                </th>
+              );
+            })}
             <th style={{ ...thStyle, textAlign: 'center' }}>Итог</th>
             <th style={{ ...thStyle, textAlign: 'center' }}>Статус</th>
           </tr>
@@ -150,6 +169,9 @@ const ScoringProgressTable: React.FC<Props> = ({
                 </td>
                 {data.is_special && tourColumns.map((tourNum) => {
                   const tour = item.tours.find((t) => t.tour_number === tourNum);
+                  const taskEntries = tour?.task_scores
+                    ? Object.entries(tour.task_scores).sort(([a], [b]) => Number(a) - Number(b))
+                    : null;
                   return (
                     <td
                       key={tourNum}
@@ -160,7 +182,12 @@ const ScoringProgressTable: React.FC<Props> = ({
                         color: tour?.tour_total != null ? '#15803d' : '#9ca3af',
                       }}
                     >
-                      {tour?.tour_total != null ? tour.tour_total : '—'}
+                      <div>{tour?.tour_total != null ? tour.tour_total : '—'}</div>
+                      {taskEntries && taskEntries.length > 0 && (
+                        <div style={{ fontSize: 10, fontWeight: 400, color: '#9ca3af', marginTop: 2 }}>
+                          {taskEntries.map(([k, v]) => `${k}:${v}`).join(' ')}
+                        </div>
+                      )}
                     </td>
                   );
                 })}

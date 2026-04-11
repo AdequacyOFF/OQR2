@@ -19,7 +19,7 @@ from sqlalchemy import delete, insert, select, update
 from sqlalchemy.orm import selectinload
 
 from ....infrastructure.database import get_db
-from ....infrastructure.database.models import BadgeTemplateModel, RoomModel, SeatAssignmentModel
+from ....infrastructure.database.models import BadgeTemplateModel, RoomModel, SeatAssignmentModel, TourTimeModel
 from ....infrastructure.repositories import (
     UserRepositoryImpl,
     AuditLogRepositoryImpl,
@@ -66,6 +66,8 @@ from ...schemas.admin_schemas import (
     CompetitionStaffItem,
     CompetitionStaffList,
     TourProgress,
+    TourTimeItem,
+    SetTourTimeRequest,
     ScoringProgressItem,
     ScoringProgressResponse,
 )
@@ -1650,6 +1652,69 @@ async def admit_and_download_single(
     )
 
 
+def _compute_tour_time_item(row: TourTimeModel) -> TourTimeItem:
+    """Build TourTimeItem from model row, computing duration_minutes."""
+    duration = None
+    if row.started_at and row.finished_at and row.finished_at > row.started_at:
+        duration = int((row.finished_at - row.started_at).total_seconds() / 60)
+    return TourTimeItem(
+        tour_number=row.tour_number,
+        started_at=row.started_at,
+        finished_at=row.finished_at,
+        duration_minutes=duration,
+    )
+
+
+@router.get("/competitions/{competition_id}/tour-times", response_model=list[TourTimeItem])
+async def get_tour_times(
+    competition_id: UUID,
+    current_user: User = Depends(require_role(UserRole.ADMIN, UserRole.SCANNER)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return all recorded tour start/finish times for a competition."""
+    result = await db.execute(
+        select(TourTimeModel)
+        .where(TourTimeModel.competition_id == competition_id)
+        .order_by(TourTimeModel.tour_number)
+    )
+    return [_compute_tour_time_item(row) for row in result.scalars().all()]
+
+
+@router.put(
+    "/competitions/{competition_id}/tour-times/{tour_number}",
+    response_model=TourTimeItem,
+)
+async def set_tour_time(
+    competition_id: UUID,
+    tour_number: int,
+    body: SetTourTimeRequest,
+    current_user: User = Depends(require_role(UserRole.ADMIN, UserRole.SCANNER)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upsert start/finish time for a specific tour of a competition."""
+    result = await db.execute(
+        select(TourTimeModel).where(
+            TourTimeModel.competition_id == competition_id,
+            TourTimeModel.tour_number == tour_number,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        row = TourTimeModel(
+            competition_id=competition_id,
+            tour_number=tour_number,
+            started_at=body.started_at,
+            finished_at=body.finished_at,
+        )
+        db.add(row)
+    else:
+        row.started_at = body.started_at
+        row.finished_at = body.finished_at
+        row.updated_at = datetime.utcnow()
+    await db.flush()
+    return _compute_tour_time_item(row)
+
+
 @router.get("/competitions/{competition_id}/scoring-progress", response_model=ScoringProgressResponse)
 async def get_scoring_progress(
     competition_id: UUID,
@@ -1690,6 +1755,14 @@ async def get_scoring_progress(
         for item in result.items
     ]
 
+    # Fetch tour times and include in response
+    tt_result = await db.execute(
+        select(TourTimeModel)
+        .where(TourTimeModel.competition_id == competition_id)
+        .order_by(TourTimeModel.tour_number)
+    )
+    tour_times = [_compute_tour_time_item(row) for row in tt_result.scalars().all()]
+
     return ScoringProgressResponse(
         competition_id=result.competition_id,
         competition_name=result.competition_name,
@@ -1697,6 +1770,7 @@ async def get_scoring_progress(
         tours_count=result.tours_count,
         items=items,
         total=result.total,
+        tour_times=tour_times,
     )
 
 
