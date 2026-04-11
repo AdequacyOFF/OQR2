@@ -144,6 +144,13 @@ class SetTourTimeRequest(BaseModel):
     finished_at: Optional[datetime] = None
 
 
+class TourConfigItem(BaseModel):
+    """Configuration for a single tour (mode and task numbers)."""
+    tour_number: int
+    mode: str  # "individual" | "individual_captains" | "team"
+    task_numbers: list[int] = []
+
+
 class ScoringProgressItem(BaseModel):
     """Single participant scoring status for admin/scanner progress table."""
     registration_id: UUID
@@ -155,6 +162,7 @@ class ScoringProgressItem(BaseModel):
     attempt_status: Optional[str] = None
     tours: list["TourProgress"] = []
     score_total: Optional[int] = None
+    is_captain: bool = False
 
 
 class ScoringProgressResponse(BaseModel):
@@ -166,6 +174,7 @@ class ScoringProgressResponse(BaseModel):
     items: list["ScoringProgressItem"]
     total: int
     tour_times: list[TourTimeItem] = []
+    tour_configs: list[TourConfigItem] = []
 
 
 class AssignStaffRequest(BaseModel):

@@ -23,6 +23,7 @@ const ScannerResultsPage: React.FC = () => {
   const [competitionsLoading, setCompetitionsLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string>('');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [exportLoading, setExportLoading] = useState(false);
 
   // Tour time form state: tourNumber → { started_at, finished_at }
   const [tourTimes, setTourTimes] = useState<Record<number, TourTimeFormEntry>>({});
@@ -72,6 +73,28 @@ const ScannerResultsPage: React.FC = () => {
       const isEmpty = Object.keys(prev).length === 0;
       return isEmpty ? map : prev;
     });
+  };
+
+  const handleExport = async () => {
+    if (!selectedId) return;
+    setExportLoading(true);
+    try {
+      const response = await api.get(`admin/competitions/${selectedId}/scoring-progress/export`, {
+        responseType: 'blob',
+      });
+      const url = URL.createObjectURL(response.data as Blob);
+      const competition = competitions.find((c) => c.id === selectedId);
+      const safeName = competition ? competition.name.replace(/[^\w\-]/g, '_').slice(0, 40) : selectedId;
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `results_${safeName}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      // silent — user sees no download
+    } finally {
+      setExportLoading(false);
+    }
   };
 
   const handleSaveTimes = async () => {
@@ -233,6 +256,15 @@ const ScannerResultsPage: React.FC = () => {
 
             {/* Results table */}
             <div className="card" style={{ padding: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+                <Button
+                  onClick={handleExport}
+                  loading={exportLoading}
+                  disabled={exportLoading}
+                >
+                  Экспорт в Excel
+                </Button>
+              </div>
               <ScoringProgressTable
                 competitionId={selectedId}
                 refreshTrigger={refreshTrigger}

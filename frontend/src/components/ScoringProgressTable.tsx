@@ -1,12 +1,65 @@
 import React, { useEffect, useRef, useState } from 'react';
 import api from '../api/client';
-import { ScoringProgressResponse, TourTimeItem } from '../types';
+import { ScoringProgressItem, ScoringProgressResponse, TourTimeItem } from '../types';
 
 interface Props {
   competitionId: string;
   highlightAttemptId?: string;
   refreshTrigger: number;
   onTourTimesLoaded?: (tourTimes: TourTimeItem[]) => void;
+}
+
+interface SortKey {
+  col: string;
+  dir: 'asc' | 'desc';
+}
+
+const MODE_LABELS: Record<string, string> = {
+  individual: 'Личный зачет',
+  individual_captains: 'Капитанское',
+  team: 'Командный',
+};
+
+function getTourTotal(item: ScoringProgressItem, tourNum: number): number | null {
+  const tour = item.tours.find((t) => t.tour_number === tourNum);
+  return tour?.tour_total ?? null;
+}
+
+function compareValues(a: unknown, b: unknown): number {
+  if (a === null || a === undefined) return 1;
+  if (b === null || b === undefined) return -1;
+  if (typeof a === 'string' && typeof b === 'string') {
+    return a.localeCompare(b, 'ru');
+  }
+  if (typeof a === 'number' && typeof b === 'number') {
+    return a - b;
+  }
+  return 0;
+}
+
+function getColValue(item: ScoringProgressItem, col: string): unknown {
+  if (col === 'name') return item.participant_name;
+  if (col === 'school') return item.participant_school;
+  if (col === 'variant') return item.variant_number;
+  if (col === 'total') return item.score_total;
+  if (col.startsWith('tour_')) {
+    const tourNum = parseInt(col.slice(5), 10);
+    return getTourTotal(item, tourNum);
+  }
+  return null;
+}
+
+function sortItems(items: ScoringProgressItem[], sortKeys: SortKey[]): ScoringProgressItem[] {
+  if (sortKeys.length === 0) return items;
+  return [...items].sort((a, b) => {
+    for (const key of sortKeys) {
+      const va = getColValue(a, key.col);
+      const vb = getColValue(b, key.col);
+      const cmp = compareValues(va, vb);
+      if (cmp !== 0) return key.dir === 'asc' ? cmp : -cmp;
+    }
+    return 0;
+  });
 }
 
 const ScoringProgressTable: React.FC<Props> = ({
@@ -18,6 +71,7 @@ const ScoringProgressTable: React.FC<Props> = ({
   const [data, setData] = useState<ScoringProgressResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sortKeys, setSortKeys] = useState<SortKey[]>([]);
   const highlightRef = useRef<HTMLTableRowElement | null>(null);
 
   const fetchProgress = async () => {
@@ -31,8 +85,9 @@ const ScoringProgressTable: React.FC<Props> = ({
       if (onTourTimesLoaded && res.tour_times) {
         onTourTimesLoaded(res.tour_times);
       }
-    } catch (e: any) {
-      setError(e?.response?.data?.detail ?? 'Ошибка загрузки данных');
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { detail?: string } } };
+      setError(err?.response?.data?.detail ?? 'Ошибка загрузки данных');
     } finally {
       setLoading(false);
     }
@@ -54,6 +109,49 @@ const ScoringProgressTable: React.FC<Props> = ({
       highlightRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
   }, [highlightAttemptId, data]);
+
+  const handleHeaderClick = (col: string, e: React.MouseEvent) => {
+    if (e.shiftKey) {
+      // Secondary sort
+      setSortKeys((prev) => {
+        const existing = prev.findIndex((k) => k.col === col);
+        if (existing === 0) {
+          // Primary → toggle direction as secondary doesn't make sense, just toggle primary
+          return [{ col, dir: prev[0].dir === 'asc' ? 'desc' : 'asc' }];
+        }
+        if (existing === 1) {
+          // Already secondary → toggle direction
+          const next = [...prev];
+          next[1] = { col, dir: prev[1].dir === 'asc' ? 'desc' : 'asc' };
+          return next;
+        }
+        // Add as secondary (replace if there's already a secondary)
+        return [prev[0] ?? { col, dir: 'asc' }, { col, dir: 'asc' }];
+      });
+    } else {
+      setSortKeys((prev) => {
+        if (prev.length > 0 && prev[0].col === col) {
+          return [{ col, dir: prev[0].dir === 'asc' ? 'desc' : 'asc' }];
+        }
+        return [{ col, dir: 'asc' }];
+      });
+    }
+  };
+
+  const getSortIndicator = (col: string): React.ReactNode => {
+    const idx = sortKeys.findIndex((k) => k.col === col);
+    if (idx === -1) return null;
+    const key = sortKeys[idx];
+    const arrow = key.dir === 'asc' ? '▲' : '▼';
+    const badge = sortKeys.length > 1 ? (
+      <sup style={{ fontSize: 9, marginLeft: 1 }}>{idx + 1}</sup>
+    ) : null;
+    return (
+      <span style={{ marginLeft: 4, color: '#2563eb' }}>
+        {arrow}{badge}
+      </span>
+    );
+  };
 
   if (error) {
     return (
@@ -84,6 +182,31 @@ const ScoringProgressTable: React.FC<Props> = ({
     tourTimeMap[tt.tour_number] = tt;
   }
 
+  // Build tour config lookup
+  const tourConfigMap: Record<number, { mode: string }> = {};
+  for (const tc of (data.tour_configs ?? [])) {
+    tourConfigMap[tc.tour_number] = tc;
+  }
+
+  const sortedItems = sortItems(data.items, sortKeys);
+
+  const makeTh = (col: string, label: React.ReactNode, style?: React.CSSProperties) => (
+    <th
+      key={col}
+      onClick={(e) => handleHeaderClick(col, e)}
+      style={{
+        ...thStyle,
+        ...style,
+        cursor: 'pointer',
+        userSelect: 'none',
+        whiteSpace: 'nowrap',
+      }}
+      title="Нажмите для сортировки. Shift+клик — вторичная сортировка"
+    >
+      {label}{getSortIndicator(col)}
+    </th>
+  );
+
   return (
     <div style={{ overflowX: 'auto' }}>
       {/* Header */}
@@ -112,6 +235,40 @@ const ScoringProgressTable: React.FC<Props> = ({
         </div>
       </div>
 
+      {sortKeys.length > 0 && (
+        <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 6, paddingLeft: 2 }}>
+          Сортировка: {sortKeys.map((k, i) => {
+            const labels: Record<string, string> = {
+              name: 'ФИО', school: 'Школа', variant: 'Вар.', total: 'Итог',
+            };
+            const label = k.col.startsWith('tour_')
+              ? `Тур ${k.col.slice(5)}`
+              : (labels[k.col] ?? k.col);
+            return (
+              <span key={k.col}>
+                {i > 0 && ' → '}
+                <strong>{label}</strong> {k.dir === 'asc' ? '▲' : '▼'}
+              </span>
+            );
+          })}
+          {' '}
+          <button
+            onClick={() => setSortKeys([])}
+            style={{
+              marginLeft: 6,
+              fontSize: 11,
+              color: '#9ca3af',
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              padding: '0 2px',
+            }}
+          >
+            ✕ сбросить
+          </button>
+        </div>
+      )}
+
       <table
         style={{
           width: '100%',
@@ -122,28 +279,35 @@ const ScoringProgressTable: React.FC<Props> = ({
       >
         <thead>
           <tr style={{ background: '#f3f4f6', borderBottom: '2px solid #e5e7eb' }}>
-            <th style={thStyle}>Участник</th>
-            <th style={thStyle}>Школа</th>
-            <th style={{ ...thStyle, textAlign: 'center' }}>Вар.</th>
+            {makeTh('name', 'Участник')}
+            {makeTh('school', 'Школа')}
+            {makeTh('variant', 'Вар.', { textAlign: 'center' })}
             {data.is_special && tourColumns.map((t) => {
               const tt = tourTimeMap[t];
-              return (
-                <th key={t} style={{ ...thStyle, textAlign: 'center' }}>
+              const cfg = tourConfigMap[t];
+              const modeLabel = cfg ? MODE_LABELS[cfg.mode] : null;
+              return makeTh(`tour_${t}`, (
+                <div>
                   <div>Тур {t}</div>
+                  {modeLabel && (
+                    <div style={{ fontSize: 10, fontWeight: 400, color: '#6b7280' }}>
+                      {modeLabel}
+                    </div>
+                  )}
                   {tt?.duration_minutes != null && (
                     <div style={{ fontSize: 10, fontWeight: 400, color: '#6b7280' }}>
                       {tt.duration_minutes} мин
                     </div>
                   )}
-                </th>
-              );
+                </div>
+              ), { textAlign: 'center' });
             })}
-            <th style={{ ...thStyle, textAlign: 'center' }}>Итог</th>
+            {makeTh('total', 'Итог', { textAlign: 'center' })}
             <th style={{ ...thStyle, textAlign: 'center' }}>Статус</th>
           </tr>
         </thead>
         <tbody>
-          {data.items.map((item) => {
+          {sortedItems.map((item) => {
             const isHighlighted = item.attempt_id === highlightAttemptId;
             const isScored = item.score_total !== null;
             return (

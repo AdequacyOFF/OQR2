@@ -31,6 +31,7 @@ class ScoringProgressItemResult:
     attempt_status: str | None
     tours: list[TourProgressResult] = field(default_factory=list)
     score_total: int | None = None
+    is_captain: bool = False
 
 
 @dataclass
@@ -114,6 +115,7 @@ class GetScoringProgressUseCase:
                 attempt_status=attempt.status.value if attempt else None,
                 tours=tour_progress,
                 score_total=attempt.score_total if attempt else None,
+                is_captain=getattr(participant, 'is_captain', False) or False,
             ))
 
         return ScoringProgressResult(

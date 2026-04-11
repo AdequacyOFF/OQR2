@@ -179,6 +179,7 @@ export interface ScoringProgressItem {
   attempt_status: string | null;
   tours: ScoringProgressTour[];
   score_total: number | null;
+  is_captain: boolean;
 }
 
 export interface TourTimeItem {
@@ -186,6 +187,12 @@ export interface TourTimeItem {
   started_at: string | null;
   finished_at: string | null;
   duration_minutes: number | null;
+}
+
+export interface TourConfig {
+  tour_number: number;
+  mode: string; // "individual" | "individual_captains" | "team"
+  task_numbers: number[];
 }
 
 export interface ScoringProgressResponse {
@@ -196,5 +203,6 @@ export interface ScoringProgressResponse {
   items: ScoringProgressItem[];
   total: number;
   tour_times: TourTimeItem[];
+  tour_configs: TourConfig[];
 }
 

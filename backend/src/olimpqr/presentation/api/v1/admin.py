@@ -70,6 +70,7 @@ from ...schemas.admin_schemas import (
     SetTourTimeRequest,
     ScoringProgressItem,
     ScoringProgressResponse,
+    TourConfigItem,
 )
 from ...dependencies import require_role
 
@@ -1715,6 +1716,31 @@ async def set_tour_time(
     return _compute_tour_time_item(row)
 
 
+def _build_tour_configs(competition) -> list[TourConfigItem]:
+    """Extract tour configs (mode + task_numbers) from competition special_settings."""
+    if not competition or not competition.is_special:
+        return []
+    settings = competition.special_settings or {}
+    tours_raw = settings.get("tours")
+    if tours_raw and isinstance(tours_raw, list):
+        configs = []
+        for t in tours_raw:
+            if not isinstance(t, dict):
+                continue
+            configs.append(TourConfigItem(
+                tour_number=int(t.get("tour_number", 0)),
+                mode=str(t.get("mode", "individual")),
+                task_numbers=[int(n) for n in t.get("task_numbers", [])],
+            ))
+        return configs
+    # Fallback: use special_tour_modes without task numbers
+    modes = competition.special_tour_modes or []
+    return [
+        TourConfigItem(tour_number=i + 1, mode=mode, task_numbers=[])
+        for i, mode in enumerate(modes)
+    ]
+
+
 @router.get("/competitions/{competition_id}/scoring-progress", response_model=ScoringProgressResponse)
 async def get_scoring_progress(
     competition_id: UUID,
@@ -1751,6 +1777,7 @@ async def get_scoring_progress(
                 for t in item.tours
             ],
             score_total=item.score_total,
+            is_captain=item.is_captain,
         )
         for item in result.items
     ]
@@ -1763,6 +1790,10 @@ async def get_scoring_progress(
     )
     tour_times = [_compute_tour_time_item(row) for row in tt_result.scalars().all()]
 
+    # Build tour configs from competition special_settings
+    competition_obj = await CompetitionRepositoryImpl(db).get_by_id(competition_id)
+    tour_configs = _build_tour_configs(competition_obj)
+
     return ScoringProgressResponse(
         competition_id=result.competition_id,
         competition_name=result.competition_name,
@@ -1771,6 +1802,211 @@ async def get_scoring_progress(
         items=items,
         total=result.total,
         tour_times=tour_times,
+        tour_configs=tour_configs,
+    )
+
+
+@router.get("/competitions/{competition_id}/scoring-progress/export")
+async def export_scoring_progress_excel(
+    competition_id: UUID,
+    current_user: User = Depends(require_role(UserRole.ADMIN, UserRole.SCANNER)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Export scoring progress as a formatted Excel (.xlsx) file."""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="openpyxl не установлен") from exc
+
+    # Reuse the same logic as the scoring-progress endpoint
+    use_case = GetScoringProgressUseCase(
+        competition_repository=CompetitionRepositoryImpl(db),
+        registration_repository=RegistrationRepositoryImpl(db),
+        attempt_repository=AttemptRepositoryImpl(db),
+        participant_repository=ParticipantRepositoryImpl(db),
+    )
+    try:
+        result = await use_case.execute(competition_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    competition_obj = await CompetitionRepositoryImpl(db).get_by_id(competition_id)
+    tour_configs = _build_tour_configs(competition_obj)
+
+    tt_result = await db.execute(
+        select(TourTimeModel)
+        .where(TourTimeModel.competition_id == competition_id)
+        .order_by(TourTimeModel.tour_number)
+    )
+    tour_time_map: dict[int, TourTimeItem] = {
+        row.tour_number: _compute_tour_time_item(row)
+        for row in tt_result.scalars().all()
+    }
+
+    # Mode label mapping
+    _MODE_LABELS = {
+        "individual": "Личный зачет",
+        "individual_captains": "Капитанское задание",
+        "team": "Командный зачет",
+    }
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Результаты"
+
+    header_font = Font(bold=True)
+    title_font = Font(bold=True, size=13)
+    header_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+    tour_fill = PatternFill(start_color="BDD7EE", end_color="BDD7EE", fill_type="solid")
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    left = Alignment(horizontal="left", vertical="center")
+    thin = Side(style="thin")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    def _set_header(cell, value):
+        cell.value = value
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center
+        cell.border = border
+
+    def _set_tour_header(cell, value):
+        cell.value = value
+        cell.font = header_font
+        cell.fill = tour_fill
+        cell.alignment = center
+        cell.border = border
+
+    competition_name = result.competition_name
+
+    if result.is_special and tour_configs:
+        # ---- Build column layout ----
+        # Fixed columns: ВУЗ, ФИО, Капитан, Вариант
+        fixed_cols = ["ВУЗ", "ФИО", "Капитан", "Вариант"]
+        n_fixed = len(fixed_cols)
+
+        # Per tour: task columns + итог тура + время тура
+        tour_col_spans: list[tuple[int, int]] = []  # (start_col_1based, count)
+        col_headers: list[str] = list(fixed_cols)
+        for tc in tour_configs:
+            start = len(col_headers) + 1
+            for task_num in tc.task_numbers:
+                col_headers.append(f"Задание {task_num}")
+            col_headers.append("Итог тура")
+            col_headers.append("Время тура")
+            span = len(tc.task_numbers) + 2
+            tour_col_spans.append((start, span))
+        col_headers.append("ИТОГО")
+        total_cols = len(col_headers)
+
+        # Row 1: Title
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_cols)
+        title_cell = ws.cell(row=1, column=1, value=f"Таблица результатов: {competition_name}")
+        title_cell.font = title_font
+        title_cell.alignment = left
+
+        # Row 2: blank spacer
+
+        # Row 3: Tour group headers (merged)
+        for i, tc in enumerate(tour_configs):
+            start_c, span = tour_col_spans[i]
+            if span > 1:
+                ws.merge_cells(start_row=3, start_column=start_c, end_row=3, end_column=start_c + span - 1)
+            label = f"Тур {tc.tour_number} — {_MODE_LABELS.get(tc.mode, tc.mode)}"
+            _set_tour_header(ws.cell(row=3, column=start_c), label)
+            # Fill remaining merged cells with tour fill
+            for c in range(start_c + 1, start_c + span):
+                ws.cell(row=3, column=c).fill = tour_fill
+                ws.cell(row=3, column=c).border = border
+        # Fixed header cells in row 3 (blank with fill)
+        for c in range(1, n_fixed + 1):
+            ws.cell(row=3, column=c).fill = header_fill
+            ws.cell(row=3, column=c).border = border
+        # ИТОГО cell in row 3
+        ws.cell(row=3, column=total_cols).fill = header_fill
+        ws.cell(row=3, column=total_cols).border = border
+
+        # Row 4: Column headers
+        for c, name in enumerate(col_headers, start=1):
+            _set_header(ws.cell(row=4, column=c), name)
+
+        # Row 5+: Data
+        for item in result.items:
+            row_data: list = [
+                item.participant_school,
+                item.participant_name,
+                "Да" if item.is_captain else "Нет",
+                item.variant_number,
+            ]
+            for tc in tour_configs:
+                tour = next((t for t in item.tours if t.tour_number == tc.tour_number), None)
+                for task_num in tc.task_numbers:
+                    if tour and tour.task_scores:
+                        row_data.append(tour.task_scores.get(str(task_num)))
+                    else:
+                        row_data.append(None)
+                row_data.append(tour.tour_total if tour else None)
+                tt = tour_time_map.get(tc.tour_number)
+                row_data.append(
+                    f"{tt.duration_minutes} мин" if tt and tt.duration_minutes is not None else ""
+                )
+            row_data.append(item.score_total)
+            ws.append(row_data)
+
+        # Set column widths
+        ws.column_dimensions[get_column_letter(1)].width = 30  # ВУЗ
+        ws.column_dimensions[get_column_letter(2)].width = 25  # ФИО
+        ws.column_dimensions[get_column_letter(3)].width = 9   # Капитан
+        ws.column_dimensions[get_column_letter(4)].width = 7   # Вариант
+        for c in range(5, total_cols + 1):
+            ws.column_dimensions[get_column_letter(c)].width = 11
+
+    else:
+        # Non-special: simple layout
+        col_headers = ["ВУЗ", "ФИО", "Вариант", "ИТОГО"]
+        total_cols = len(col_headers)
+
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_cols)
+        title_cell = ws.cell(row=1, column=1, value=f"Таблица результатов: {competition_name}")
+        title_cell.font = title_font
+        title_cell.alignment = left
+
+        for c, name in enumerate(col_headers, start=1):
+            _set_header(ws.cell(row=3, column=c), name)
+
+        for item in result.items:
+            ws.append([
+                item.participant_school,
+                item.participant_name,
+                item.variant_number,
+                item.score_total,
+            ])
+
+        ws.column_dimensions["A"].width = 30
+        ws.column_dimensions["B"].width = 25
+        ws.column_dimensions["C"].width = 9
+        ws.column_dimensions["D"].width = 10
+
+    # Freeze panes below headers
+    freeze_row = 5 if (result.is_special and tour_configs) else 4
+    ws.freeze_panes = ws.cell(row=freeze_row, column=1)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    safe_name = re.sub(r"[^\w\-]", "_", competition_name)[:40]
+    filename = f"results_{safe_name}.xlsx"
+    encoded_filename = quote(filename)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+        },
     )
 
 
