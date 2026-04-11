@@ -148,6 +148,19 @@ export interface AdminRegistrationItem {
   institution_name: string | null;
   entry_token: string | null;
   status: string;
+  seat_room_name: string | null;
+  seat_number: number | null;
+  variant_number: number | null;
+}
+
+export interface ReplaceParticipantResponse {
+  new_registration_id: string;
+  entry_token: string;
+  seat_transferred: boolean;
+  room_name: string | null;
+  seat_number: number | null;
+  variant_number: number | null;
+  warning: string | null;
 }
 
 export interface ScoringProgressTour {

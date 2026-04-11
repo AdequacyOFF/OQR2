@@ -85,6 +85,22 @@ class AdminRegisterResponse(BaseModel):
     entry_token: str
 
 
+class ReplaceParticipantRequest(BaseModel):
+    """Replace old participant in a registration with a new one."""
+    new_participant_id: UUID
+
+
+class ReplaceParticipantResponse(BaseModel):
+    """Response after participant replacement."""
+    new_registration_id: UUID
+    entry_token: str
+    seat_transferred: bool
+    room_name: Optional[str] = None
+    seat_number: Optional[int] = None
+    variant_number: Optional[int] = None
+    warning: Optional[str] = None
+
+
 class AdminRegistrationItem(BaseModel):
     """Single registration item for admin list."""
     registration_id: UUID
@@ -96,6 +112,9 @@ class AdminRegistrationItem(BaseModel):
     institution_name: Optional[str] = None
     entry_token: Optional[str] = None
     status: str
+    seat_room_name: Optional[str] = None
+    seat_number: Optional[int] = None
+    variant_number: Optional[int] = None
 
 
 class AdminRegistrationListResponse(BaseModel):

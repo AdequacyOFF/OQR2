@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import api from '../../api/client';
-import type { Competition, Room, AdminRegistrationItem } from '../../types';
+import type { Competition, Room, AdminRegistrationItem, ReplaceParticipantResponse } from '../../types';
 import Layout from '../../components/layout/Layout';
 import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
@@ -124,7 +124,9 @@ const CompetitionsAdminPage: React.FC = () => {
   const [replaceRegId, setReplaceRegId] = useState<string | null>(null);
   const [replaceSearch, setReplaceSearch] = useState('');
   const [replacing, setReplacing] = useState(false);
+  const [replaceResult, setReplaceResult] = useState<ReplaceParticipantResponse | null>(null);
   const [downloadingRegId, setDownloadingRegId] = useState<string | null>(null);
+  const [lastAddedRegId, setLastAddedRegId] = useState<string | null>(null);
 
   // Edit participant fields
   const [editParticipantId, setEditParticipantId] = useState<string | null>(null);
@@ -673,11 +675,13 @@ const CompetitionsAdminPage: React.FC = () => {
     if (!regCompetition) return;
     setRegistering(true);
     setError(null);
+    setLastAddedRegId(null);
     try {
-      await api.post('admin/registrations', {
+      const res = await api.post<{ registration_id: string; entry_token: string }>('admin/registrations', {
         participant_id: participantId,
         competition_id: regCompetition.id,
       });
+      setLastAddedRegId(res.data.registration_id);
       // Reload registrations
       const regRes = await api.get<{ items: AdminRegistrationItem[]; total: number }>(
         `admin/registrations/${regCompetition.id}`
@@ -719,12 +723,13 @@ const CompetitionsAdminPage: React.FC = () => {
     if (!replaceRegId || !regCompetition) return;
     setReplacing(true);
     setError(null);
+    setReplaceResult(null);
     try {
-      await api.delete(`admin/registrations/${replaceRegId}`);
-      await api.post('admin/registrations', {
-        participant_id: newParticipantId,
-        competition_id: regCompetition.id,
-      });
+      const res = await api.post<ReplaceParticipantResponse>(
+        `admin/registrations/${replaceRegId}/replace`,
+        { new_participant_id: newParticipantId }
+      );
+      setReplaceResult(res.data);
       const regRes = await api.get<{ items: AdminRegistrationItem[]; total: number }>(
         `admin/registrations/${regCompetition.id}`
       );
@@ -1991,6 +1996,58 @@ const CompetitionsAdminPage: React.FC = () => {
               </div>
             )}
 
+            {/* Replace result banner */}
+            {replaceResult && (
+              <div
+                style={{
+                  background: '#f0fdf4',
+                  border: '1px solid #86efac',
+                  borderRadius: 8,
+                  padding: 14,
+                  marginBottom: 16,
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  gap: 12,
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 600, color: '#15803d', marginBottom: 4 }}>
+                    Участник заменён
+                  </div>
+                  {replaceResult.seat_transferred ? (
+                    <div style={{ fontSize: 13, color: '#166534' }}>
+                      Место перенесено: <strong>{replaceResult.room_name}</strong>, место <strong>{replaceResult.seat_number}</strong>, вариант <strong>{replaceResult.variant_number}</strong>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 13, color: '#166534' }}>
+                      Место будет назначено при допуске (↓)
+                    </div>
+                  )}
+                  {replaceResult.warning && (
+                    <div style={{ fontSize: 12, color: '#b45309', marginTop: 4 }}>
+                      ⚠ {replaceResult.warning}
+                    </div>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <Button
+                    className="btn-sm"
+                    onClick={() => handleAdmitAndDownload(replaceResult.new_registration_id, '')}
+                    loading={downloadingRegId === replaceResult.new_registration_id}
+                  >
+                    ↓ Скачать бейдж и бланки
+                  </Button>
+                  <button
+                    onClick={() => setReplaceResult(null)}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280', fontSize: 16 }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Edit participant fields panel */}
             {editParticipantId && (
               <div style={{ background: '#fafaf5', border: '1px solid #d1d5db', borderRadius: 8, padding: 16, marginBottom: 16 }}>
@@ -2069,18 +2126,32 @@ const CompetitionsAdminPage: React.FC = () => {
                       <th>Капитан</th>
                       <th>Учреждение</th>
                       <th>Статус</th>
+                      <th>Место</th>
                       <th></th>
                     </tr>
                   </thead>
                   <tbody>
                     {regItems.map((item) => (
-                      <tr key={item.registration_id}>
+                      <tr
+                        key={item.registration_id}
+                        style={
+                          item.registration_id === lastAddedRegId ||
+                          item.registration_id === replaceResult?.new_registration_id
+                            ? { background: '#f0fdf4' }
+                            : undefined
+                        }
+                      >
                         <td>{item.participant_name}</td>
                         <td>{item.participant_school}</td>
                         <td>{item.participant_institution_location || '—'}</td>
                         <td>{item.participant_is_captain ? 'Да' : 'Нет'}</td>
                         <td>{item.institution_name || '—'}</td>
                         <td>{getRegStatusLabel(item.status)}</td>
+                        <td style={{ whiteSpace: 'nowrap', fontSize: 12 }}>
+                          {item.seat_room_name
+                            ? `${item.seat_room_name} / ${item.seat_number}`
+                            : '—'}
+                        </td>
                         <td style={{ whiteSpace: 'nowrap' }}>
                           <Tooltip text="Допустить и скачать бланки + бейдж">
                             <button

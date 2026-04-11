@@ -15,11 +15,11 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.orm import selectinload
 
 from ....infrastructure.database import get_db
-from ....infrastructure.database.models import BadgeTemplateModel
+from ....infrastructure.database.models import BadgeTemplateModel, RoomModel, SeatAssignmentModel
 from ....infrastructure.repositories import (
     UserRepositoryImpl,
     AuditLogRepositoryImpl,
@@ -58,6 +58,8 @@ from ...schemas.admin_schemas import (
     StatisticsResponse,
     AdminRegisterRequest,
     AdminRegisterResponse,
+    ReplaceParticipantRequest,
+    ReplaceParticipantResponse,
     AdminRegistrationItem,
     AdminRegistrationListResponse,
     AssignStaffRequest,
@@ -1277,6 +1279,19 @@ async def list_competition_registrations(
     result = await db.execute(stmt)
     registrations = result.scalars().all()
 
+    # Bulk-load seat assignments for all registrations in one query
+    reg_ids = [reg.id for reg in registrations]
+    seat_map: dict[UUID, tuple[str | None, int | None, int | None]] = {}
+    if reg_ids:
+        seat_stmt = (
+            select(SeatAssignmentModel, RoomModel.name)
+            .join(RoomModel, SeatAssignmentModel.room_id == RoomModel.id)
+            .where(SeatAssignmentModel.registration_id.in_(reg_ids))
+        )
+        seat_result = await db.execute(seat_stmt)
+        for seat_row, room_name in seat_result.all():
+            seat_map[seat_row.registration_id] = (room_name, seat_row.seat_number, seat_row.variant_number)
+
     items = []
     for reg in registrations:
         participant = reg.participant
@@ -1288,6 +1303,7 @@ async def list_competition_registrations(
         if reg.entry_token:
             entry_token_raw = reg.entry_token.raw_token
 
+        seat_info = seat_map.get(reg.id)
         items.append(
             AdminRegistrationItem(
                 registration_id=reg.id,
@@ -1299,6 +1315,9 @@ async def list_competition_registrations(
                 institution_name=institution_name,
                 entry_token=entry_token_raw,
                 status=reg.status.value,
+                seat_room_name=seat_info[0] if seat_info else None,
+                seat_number=seat_info[1] if seat_info else None,
+                variant_number=seat_info[2] if seat_info else None,
             )
         )
 
@@ -1318,6 +1337,85 @@ async def delete_registration(
         raise HTTPException(status_code=404, detail="Регистрация не найдена")
     await registration_repo.delete(registration_id)
     return {"ok": True}
+
+
+@router.post("/registrations/{registration_id}/replace", response_model=ReplaceParticipantResponse)
+async def replace_registration_participant(
+    registration_id: UUID,
+    body: ReplaceParticipantRequest,
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Replace the participant in a registration, transferring the seat assignment to the new participant."""
+    registration_repo = RegistrationRepositoryImpl(db)
+    competition_repo = CompetitionRepositoryImpl(db)
+    participant_repo = ParticipantRepositoryImpl(db)
+    entry_token_repo = EntryTokenRepositoryImpl(db)
+    token_service = TokenService(settings.hmac_secret_key)
+
+    old_reg = await registration_repo.get_by_id(registration_id)
+    if not old_reg:
+        raise HTTPException(status_code=404, detail="Регистрация не найдена")
+
+    # Capture seat assignment before deletion
+    seat_result = await db.execute(
+        select(SeatAssignmentModel, RoomModel.name)
+        .join(RoomModel, SeatAssignmentModel.room_id == RoomModel.id)
+        .where(SeatAssignmentModel.registration_id == registration_id)
+    )
+    seat_row = seat_result.one_or_none()
+    old_seat_model = seat_row[0] if seat_row else None
+    old_room_name = seat_row[1] if seat_row else None
+
+    warning = None
+    if old_reg.status.value == "completed":
+        warning = "Старый участник уже был допущен — его попытка удалена"
+
+    # Create new registration for the replacement participant
+    use_case = RegisterForCompetitionUseCase(
+        registration_repository=registration_repo,
+        competition_repository=competition_repo,
+        participant_repository=participant_repo,
+        entry_token_repository=entry_token_repo,
+        token_service=token_service,
+    )
+    try:
+        new_reg_result = await use_case.execute(
+            participant_id=body.new_participant_id,
+            competition_id=old_reg.competition_id,
+            skip_status_check=True,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    new_registration_id = new_reg_result.registration_id
+
+    # Delete old registration (CASCADE removes its seat_assignment, entry_token, attempts, scans)
+    await registration_repo.delete(registration_id)
+
+    # Re-assign same seat to the new registration
+    if old_seat_model is not None:
+        await db.execute(
+            insert(SeatAssignmentModel).values(
+                id=uuid4(),
+                registration_id=new_registration_id,
+                room_id=old_seat_model.room_id,
+                seat_number=old_seat_model.seat_number,
+                variant_number=old_seat_model.variant_number,
+                created_at=datetime.utcnow(),
+            )
+        )
+        await db.flush()
+
+    return ReplaceParticipantResponse(
+        new_registration_id=new_registration_id,
+        entry_token=new_reg_result.entry_token,
+        seat_transferred=old_seat_model is not None,
+        room_name=old_room_name if old_seat_model else None,
+        seat_number=old_seat_model.seat_number if old_seat_model else None,
+        variant_number=old_seat_model.variant_number if old_seat_model else None,
+        warning=warning,
+    )
 
 
 @router.post("/registrations/{registration_id}/admit-and-download")
