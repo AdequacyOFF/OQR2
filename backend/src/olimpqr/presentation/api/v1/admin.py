@@ -1413,6 +1413,12 @@ async def admit_and_download_single(
 
     folder = _slugify_folder_name(f"{participant.full_name}")
 
+    # Load badge template for this competition (JSON-based, from visual editor)
+    badge_tmpl_result = await db.execute(
+        select(BadgeTemplateModel).where(BadgeTemplateModel.competition_id == reg.competition_id)
+    )
+    badge_template = badge_tmpl_result.scalar_one_or_none()
+
     zip_buffer = BytesIO()
     word_generator = WordTemplateGenerator()
     added_files = 0
@@ -1490,18 +1496,40 @@ async def admit_and_download_single(
             if photo_bytes is None:
                 gen_errors.append("Фото для бейджа не найдено — бейдж будет без фотографии")
             try:
-                badge_docx = word_generator.generate_badge_docx(
-                    qr_payload=entry_token_raw,
-                    first_name=first_name,
-                    last_name=last_name,
-                    middle_name=middle_name,
-                    role="УЧАСТНИК",
-                    participant_school=participant.school,
-                    institution_name=institution_name,
-                    competition_name=competition.name,
-                    photo_bytes=photo_bytes,
-                )
-                zf.writestr(f"{folder}/badge.docx", badge_docx)
+                if badge_template is not None:
+                    # Use JSON template from visual editor (same as async batch generation)
+                    from ....infrastructure.pdf.json_badge_generator import JsonBadgeGenerator
+                    json_gen = JsonBadgeGenerator()
+                    participant_data = {
+                        "LAST_NAME": last_name,
+                        "FIRST_NAME": first_name,
+                        "MIDDLE_NAME": middle_name,
+                        "ROLE": "УЧАСТНИК",
+                        "QR_PAYLOAD": entry_token_raw,
+                        "PHOTO_BYTES": photo_bytes,
+                        "COMPETITION_NAME": competition.name,
+                        "INSTITUTION_NAME": institution_name,
+                    }
+                    badge_pdf = json_gen.generate_badge_pdf(
+                        badge_template.config_json or {},
+                        participant_data,
+                        badge_template.background_image_bytes,
+                    )
+                    zf.writestr(f"{folder}/badge.pdf", badge_pdf)
+                else:
+                    # Fallback: DOCX template from disk
+                    badge_docx = word_generator.generate_badge_docx(
+                        qr_payload=entry_token_raw,
+                        first_name=first_name,
+                        last_name=last_name,
+                        middle_name=middle_name,
+                        role="УЧАСТНИК",
+                        participant_school=participant.school,
+                        institution_name=institution_name,
+                        competition_name=competition.name,
+                        photo_bytes=photo_bytes,
+                    )
+                    zf.writestr(f"{folder}/badge.docx", badge_docx)
                 added_files += 1
             except Exception as exc:
                 gen_errors.append(f"Бейдж: {exc}")
