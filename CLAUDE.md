@@ -74,13 +74,16 @@ backend/src/olimpqr/
     │                 # Badge endpoints live in admin.py: /competitions/{id}/badge-template,
     │                 # /registrations/{id}/badges-pdf, /registrations/{id}/badges-docx,
     │                 # /special/templates/badge/photos/upload, /special/templates/badge/fonts/upload
+    │                 # Results export endpoints in admin.py: /competitions/{id}/scoring-progress/export
+    │                 # (scoring progress xlsx), /competitions/{id}/results-table/export
+    │                 # (final standings: 2-sheet xlsx with personal + team rankings)
     ├── dependencies/ # JWT auth + role-based access (require_role factory)
     └── schemas/      # Pydantic v2 request/response models
 ```
 
 ### Roles
 
-Four user roles: `ADMIN`, `ADMITTER`, `SCANNER`, `INVIGILATOR`. The `invigilate was added later — it grants access to `/invigilator/*` endpoints for recording participant events and issuing extra answer sheets.
+Four user roles: `ADMIN`, `ADMITTER`, `SCANNER`, `INVIGILATOR`. The `INVIGILATOR` role was added later — it grants access to `/invigilator/*` endpoints for recording participant events and issuing extra answer sheets.
 
 ### Key Patterns
 
@@ -122,9 +125,9 @@ Rate limiter is auto-disabled when `ENVIRONMENT=test`.
 
 ## Database
 
-PostgreSQL 16 with async driver (asyncpg). Tables: `users`, `participants`, `competitions`, `registrations`, `entry_tokens`, `attempts`, `scans`, `audit_log`, `institutions`, `rooms`, `seat_assignments`, `documents`, `answer_sheets`, `participant_events`, `badge_templates`, `badge_photos`. All enum columns use `values_callable=lambda e: [member.value for member in e]` to map Python enum names (uppercase) to PostgreSQL enum values (lowercase).
+PostgreSQL 16 with async driver (asyncpg). Tables: `users`, `participants`, `competitions`, `registrations`, `entry_tokens`, `attempts`, `scans`, `audit_log`, `institutions`, `rooms`, `seat_assignments`, `documents`, `answer_sheets`, `participant_events`, `badge_templates`, `badge_photos`, `user_competition_access`. All enum columns use `values_callable=lambda e: [member.value for member in e]` to map Python enum names (uppercase) to PostgreSQL enum values (lowercase).
 
-Alembic migrations in `backend/alembic/`. Multiple numbered migrations (001–007+); run them in order via `alembic upgrade head`.
+Alembic migrations in `backend/alembic/`. Numbered migrations `001–013` plus a few unnumbered revisions; run them in order via `alembic upgrade head`.
 
 ## Environment
 

@@ -24,6 +24,7 @@ const ScannerResultsPage: React.FC = () => {
   const [selectedId, setSelectedId] = useState<string>('');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [exportLoading, setExportLoading] = useState(false);
+  const [resultsTableLoading, setResultsTableLoading] = useState(false);
 
   // Tour time form state: tourNumber → { started_at, finished_at }
   const [tourTimes, setTourTimes] = useState<Record<number, TourTimeFormEntry>>({});
@@ -94,6 +95,30 @@ const ScannerResultsPage: React.FC = () => {
       // silent — user sees no download
     } finally {
       setExportLoading(false);
+    }
+  };
+
+  const handleExportResultsTable = async () => {
+    if (!selectedId) return;
+    setResultsTableLoading(true);
+    try {
+      const response = await api.get(
+        `admin/competitions/${selectedId}/results-table/export`,
+        { responseType: 'blob' }
+      );
+      const url = URL.createObjectURL(response.data as Blob);
+      const safeName = selectedCompetition
+        ? selectedCompetition.name.replace(/[^\w\-]/g, '_').slice(0, 40)
+        : selectedId;
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `results_table_${safeName}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      // silent
+    } finally {
+      setResultsTableLoading(false);
     }
   };
 
@@ -256,7 +281,14 @@ const ScannerResultsPage: React.FC = () => {
 
             {/* Results table */}
             <div className="card" style={{ padding: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginBottom: 12 }}>
+                <Button
+                  onClick={handleExportResultsTable}
+                  loading={resultsTableLoading}
+                  disabled={resultsTableLoading}
+                >
+                  Итоговая таблица (.xlsx)
+                </Button>
                 <Button
                   onClick={handleExport}
                   loading={exportLoading}

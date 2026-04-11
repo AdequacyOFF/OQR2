@@ -65,7 +65,12 @@
       "Bash(grep -E \"\\\\.\\(py\\)$\")",
       "Bash(poetry run:*)",
       "Bash(./node_modules/.bin/tsc --noEmit)",
-      "Bash(grep -E \"\\\\.\\(tsx|ts\\)$\")"
+      "Bash(grep -E \"\\\\.\\(tsx|ts\\)$\")",
+      "Bash(pip install:*)",
+      "Bash(python:*)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(D:/Projects/Kafedra/OQR2/frontend/node_modules/.bin/tsc.cmd --noEmit --project D:/Projects/Kafedra/OQR2/frontend/tsconfig.json)",
+      "Bash(/d/Projects/Kafedra/OQR2/.venv/Scripts/pytest.exe --no-cov -x -q)"
     ],
     "deny": [],
     "ask": []

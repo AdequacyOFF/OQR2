@@ -2010,6 +2010,578 @@ async def export_scoring_progress_excel(
     )
 
 
+@router.get("/competitions/{competition_id}/results-table/export")
+async def export_results_table(
+    competition_id: UUID,
+    current_user: User = Depends(require_role(UserRole.ADMIN, UserRole.SCANNER)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Export final results table as .xlsx with two sheets: personal and team standings."""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="openpyxl не установлен") from exc
+
+    use_case = GetScoringProgressUseCase(
+        competition_repository=CompetitionRepositoryImpl(db),
+        registration_repository=RegistrationRepositoryImpl(db),
+        attempt_repository=AttemptRepositoryImpl(db),
+        participant_repository=ParticipantRepositoryImpl(db),
+    )
+    try:
+        result = await use_case.execute(competition_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    competition_obj = await CompetitionRepositoryImpl(db).get_by_id(competition_id)
+    tour_configs = _build_tour_configs(competition_obj)
+
+    tt_result = await db.execute(
+        select(TourTimeModel)
+        .where(TourTimeModel.competition_id == competition_id)
+        .order_by(TourTimeModel.tour_number)
+    )
+    tour_time_map = {row.tour_number: row for row in tt_result.scalars().all()}
+
+    # Fetch participant grades (not included in use case output)
+    from ....infrastructure.database.models import ParticipantModel
+    grade_rows = await db.execute(select(ParticipantModel.id, ParticipantModel.grade))
+    grade_map: dict[UUID, int | None] = {row.id: row.grade for row in grade_rows}
+
+    competition_name = result.competition_name
+
+    # ── Styles ──────────────────────────────────────────────────────────────
+    bold = Font(bold=True)
+    title_font = Font(bold=True, size=13)
+    header_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+    tour_fill = PatternFill(start_color="BDD7EE", end_color="BDD7EE", fill_type="solid")
+    calc_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    left = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    thin = Side(style="thin")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    def _h(cell, value, fill=None):
+        """Write a header cell."""
+        cell.value = value
+        cell.font = bold
+        cell.fill = fill or header_fill
+        cell.alignment = center
+        cell.border = border
+
+    def _c(cell, value):
+        """Write a calculated (formula) cell with grey fill."""
+        cell.value = value
+        cell.fill = calc_fill
+        cell.alignment = center
+        cell.border = border
+
+    def _d(cell, value):
+        """Write a plain data cell."""
+        cell.value = value
+        cell.alignment = center
+        cell.border = border
+
+    # ── Helper: tour rank COUNTIFS formula ─────────────────────────────────
+    def _tour_rank_formula(total_cl: str, time_cl: str, data_row: int, row: int) -> str:
+        return (
+            f"=1+COUNTIFS(${total_cl}${data_row}:${total_cl}$9999,"
+            f'">"&{total_cl}{row})'
+            f"+COUNTIFS(${total_cl}${data_row}:${total_cl}$9999,"
+            f'"="&{total_cl}{row},${time_cl}${data_row}:${time_cl}$9999,'
+            f'"<"&{time_cl}{row})'
+        )
+
+    # ── Helper: final rank COUNTIFS (3-level: rank_sum asc, time asc, score desc) ──
+    def _final_rank_formula(rs_cl: str, st_cl: str, ss_cl: str, data_row: int, row: int) -> str:
+        return (
+            f"=1+COUNTIFS(${rs_cl}${data_row}:${rs_cl}$9999,"
+            f'"<"&{rs_cl}{row})'
+            f"+COUNTIFS(${rs_cl}${data_row}:${rs_cl}$9999,"
+            f'"="&{rs_cl}{row},${st_cl}${data_row}:${st_cl}$9999,'
+            f'"<"&{st_cl}{row})'
+            f"+COUNTIFS(${rs_cl}${data_row}:${rs_cl}$9999,"
+            f'"="&{rs_cl}{row},${st_cl}${data_row}:${st_cl}$9999,'
+            f'"="&{st_cl}{row},${ss_cl}${data_row}:${ss_cl}$9999,'
+            f'">"&{ss_cl}{row})'
+        )
+
+    # ── Helper: team rank (2-level: rank_sum asc, time asc) ────────────────
+    def _team_final_rank_formula(rs_cl: str, st_cl: str, data_row: int, row: int) -> str:
+        return (
+            f"=1+COUNTIFS(${rs_cl}${data_row}:${rs_cl}$9999,"
+            f'"<"&{rs_cl}{row})'
+            f"+COUNTIFS(${rs_cl}${data_row}:${rs_cl}$9999,"
+            f'"="&{rs_cl}{row},${st_cl}${data_row}:${st_cl}$9999,'
+            f'"<"&{st_cl}{row})'
+        )
+
+    # ── Helper: apply border/fill to a whole row range ────────────────────
+    def _fill_row_range(ws, row: int, col_start: int, col_end: int, fill, border):
+        for c in range(col_start, col_end + 1):
+            ws.cell(row=row, column=c).fill = fill
+            ws.cell(row=row, column=c).border = border
+
+    # ────────────────────────────────────────────────────────────────────────
+    # Classify tours
+    individual_tours = [tc for tc in tour_configs if tc.mode in ("individual", "individual_captains")]
+    captain_tours = [tc for tc in tour_configs if tc.mode == "individual_captains"]
+    team_tours = [tc for tc in tour_configs if tc.mode == "team"]
+
+    # Build captain bonus lookup: institution_name → tour_number → total_score
+    captain_bonus: dict[str, dict[int, int | None]] = {}
+    for item in result.items:
+        if item.is_captain:
+            inst = item.participant_school or ""
+            for t in item.tours:
+                if any(tc.tour_number == t.tour_number for tc in captain_tours):
+                    captain_bonus.setdefault(inst, {})[t.tour_number] = t.tour_total
+
+    # Build team tour data: institution_name → tour_number → total_score
+    team_tour_data: dict[str, dict[int, int | None]] = {}
+    for item in result.items:
+        inst = item.participant_school or ""
+        for t in item.tours:
+            if any(tc.tour_number == t.tour_number for tc in team_tours):
+                prev = team_tour_data.setdefault(inst, {}).get(t.tour_number) or 0
+                addition = t.tour_total or 0
+                team_tour_data.setdefault(inst, {})[t.tour_number] = prev + addition
+
+    wb = Workbook()
+
+    # ════════════════════════════════════════════════════════════════════════
+    # SHEET 1: Личный зачет
+    # ════════════════════════════════════════════════════════════════════════
+    ws1 = wb.active
+    ws1.title = "Личный зачет"
+
+    DATA_ROW_S1 = 5  # data starts at row 5
+
+    # ── Build column index map ──────────────────────────────────────────────
+    # col indices are 1-based; column A is skipped (reference uses B as first)
+    ci = 2  # start at column B
+
+    num_col = ci; ci += 1           # B: №
+    inst_col = ci; ci += 1          # C: institution (SUMIF key)
+    vid_col = ci; ci += 1           # D: ФИО / Вид
+
+    # Per individual tour: task_cols, total_col, time_col, rank_col
+    tour_col_map: dict[int, dict] = {}
+    for tc in individual_tours:
+        n_tasks = len(tc.task_numbers) if tc.task_numbers else 1
+        task_cols = list(range(ci, ci + n_tasks)); ci += n_tasks
+        total_col = ci; ci += 1
+        time_col = ci; ci += 1
+        rank_col = ci; ci += 1
+        tour_col_map[tc.tour_number] = {
+            "task_cols": task_cols,
+            "total_col": total_col,
+            "time_col": time_col,
+            "rank_col": rank_col,
+            "n_tasks": n_tasks,
+            "task_numbers": tc.task_numbers,
+        }
+
+    # Summary columns
+    rank_sum_col = ci; ci += 1
+    time_sum_col = ci; ci += 1
+    score_sum_col = ci; ci += 1
+    final_rank_col = ci
+
+    total_cols_s1 = final_rank_col
+
+    # ── Rows 1–2: title ───────────────────────────────────────────────────
+    ws1.merge_cells(start_row=1, start_column=2, end_row=1, end_column=total_cols_s1)
+    t = ws1.cell(row=1, column=2, value="Личный зачет")
+    t.font = title_font; t.alignment = left
+    ws1.merge_cells(start_row=2, start_column=2, end_row=2, end_column=total_cols_s1)
+    t2 = ws1.cell(row=2, column=2, value=competition_name)
+    t2.font = Font(bold=True, size=11); t2.alignment = left
+
+    # ── Row 3: group headers ──────────────────────────────────────────────
+    _fill_row_range(ws1, 3, 2, total_cols_s1, header_fill, border)
+    ws1.merge_cells(start_row=3, start_column=2, end_row=4, end_column=num_col)
+    _h(ws1.cell(row=3, column=num_col), "№ п/п")
+    ws1.merge_cells(start_row=3, start_column=inst_col, end_row=3, end_column=vid_col)
+    _h(ws1.cell(row=3, column=inst_col), "Участники олимпиады")
+
+    for tc in individual_tours:
+        tcm = tour_col_map[tc.tour_number]
+        span_start = tcm["task_cols"][0]
+        span_end = tcm["rank_col"]
+        if span_end > span_start:
+            ws1.merge_cells(start_row=3, start_column=span_start, end_row=3, end_column=span_end)
+        _h(ws1.cell(row=3, column=span_start), f"Тур {tc.tour_number}", fill=tour_fill)
+        _fill_row_range(ws1, 3, span_start + 1, span_end, tour_fill, border)
+
+    if individual_tours:
+        ws1.merge_cells(start_row=3, start_column=rank_sum_col, end_row=3, end_column=score_sum_col)
+        _h(ws1.cell(row=3, column=rank_sum_col), "Итого")
+
+    ws1.merge_cells(start_row=3, start_column=final_rank_col, end_row=4, end_column=final_rank_col)
+    _h(ws1.cell(row=3, column=final_rank_col), "Место с окончательным порядком")
+
+    # ── Row 4: column headers ─────────────────────────────────────────────
+    _fill_row_range(ws1, 4, 2, total_cols_s1, header_fill, border)
+    _h(ws1.cell(row=4, column=inst_col), "Наименование команды (ВУЗ)")
+    _h(ws1.cell(row=4, column=vid_col), "ФИО")
+
+    for tc in individual_tours:
+        tcm = tour_col_map[tc.tour_number]
+        task_nums = tcm["task_numbers"] or list(range(1, tcm["n_tasks"] + 1))
+        for i, col in enumerate(tcm["task_cols"]):
+            _h(ws1.cell(row=4, column=col), f"Задание {task_nums[i]}")
+        _h(ws1.cell(row=4, column=tcm["total_col"]), "Итого баллов")
+        _h(ws1.cell(row=4, column=tcm["time_col"]), "Время выполнения")
+        _h(ws1.cell(row=4, column=tcm["rank_col"]), "Место")
+
+    if individual_tours:
+        _h(ws1.cell(row=4, column=rank_sum_col), "Сумма мест")
+        _h(ws1.cell(row=4, column=time_sum_col), "Суммарное время")
+        _h(ws1.cell(row=4, column=score_sum_col), "Сумма баллов")
+
+    # ── Rows 5+: data ────────────────────────────────────────────────────
+    for idx, item in enumerate(result.items):
+        row = DATA_ROW_S1 + idx
+        grade = grade_map.get(item.participant_id)
+        name_val = item.participant_name or ""
+        if grade:
+            name_val = f"{name_val} ({grade} кл.)"
+
+        # Row number
+        if idx == 0:
+            _c(ws1.cell(row=row, column=num_col), 1)
+        else:
+            _c(ws1.cell(row=row, column=num_col), f"={get_column_letter(num_col)}{row - 1}+1")
+
+        # Institution (SUMIF key)
+        _d(ws1.cell(row=row, column=inst_col), item.participant_school or "")
+        # ФИО + класс
+        _d(ws1.cell(row=row, column=vid_col), name_val)
+
+        # Tour data
+        for tc in individual_tours:
+            tcm = tour_col_map[tc.tour_number]
+            tour_prog = next((t for t in item.tours if t.tour_number == tc.tour_number), None)
+            task_nums = tcm["task_numbers"] or list(range(1, tcm["n_tasks"] + 1))
+
+            # Task scores (input cells)
+            for i, col in enumerate(tcm["task_cols"]):
+                score = None
+                if tour_prog and tour_prog.task_scores:
+                    score = tour_prog.task_scores.get(str(task_nums[i]))
+                _d(ws1.cell(row=row, column=col), score)
+
+            # Tour total (formula)
+            task_letters = "+".join(
+                f"{get_column_letter(c)}{row}" for c in tcm["task_cols"]
+            )
+            _c(ws1.cell(row=row, column=tcm["total_col"]), f"={task_letters}")
+
+            # Tour time (competition-wide duration or blank)
+            tt = tour_time_map.get(tc.tour_number)
+            time_val = None
+            if tt and tt.duration_minutes is not None:
+                from datetime import timedelta
+                time_val = timedelta(minutes=tt.duration_minutes)
+            _d(ws1.cell(row=row, column=tcm["time_col"]), time_val)
+
+            # Tour rank (formula)
+            total_cl = get_column_letter(tcm["total_col"])
+            time_cl = get_column_letter(tcm["time_col"])
+            _c(ws1.cell(row=row, column=tcm["rank_col"]),
+               _tour_rank_formula(total_cl, time_cl, DATA_ROW_S1, row))
+
+        # Summary formulas
+        if individual_tours:
+            rank_cols_str = "+".join(
+                f"{get_column_letter(tour_col_map[tc.tour_number]['rank_col'])}{row}"
+                for tc in individual_tours
+            )
+            _c(ws1.cell(row=row, column=rank_sum_col), f"={rank_cols_str}")
+
+            time_cols_str = "+".join(
+                f"{get_column_letter(tour_col_map[tc.tour_number]['time_col'])}{row}"
+                for tc in individual_tours
+            )
+            _c(ws1.cell(row=row, column=time_sum_col), f"={time_cols_str}")
+
+            score_cols_str = "+".join(
+                f"{get_column_letter(tour_col_map[tc.tour_number]['total_col'])}{row}"
+                for tc in individual_tours
+            )
+            _c(ws1.cell(row=row, column=score_sum_col), f"={score_cols_str}")
+
+            rs_cl = get_column_letter(rank_sum_col)
+            st_cl = get_column_letter(time_sum_col)
+            ss_cl = get_column_letter(score_sum_col)
+            _c(ws1.cell(row=row, column=final_rank_col),
+               _final_rank_formula(rs_cl, st_cl, ss_cl, DATA_ROW_S1, row))
+        else:
+            # No individual tours: use score_total directly
+            _d(ws1.cell(row=row, column=final_rank_col), item.score_total)
+
+    # ── Column widths & freeze ────────────────────────────────────────────
+    ws1.column_dimensions[get_column_letter(num_col)].width = 5
+    ws1.column_dimensions[get_column_letter(inst_col)].width = 30
+    ws1.column_dimensions[get_column_letter(vid_col)].width = 25
+    for tc in individual_tours:
+        tcm = tour_col_map[tc.tour_number]
+        for col in tcm["task_cols"]:
+            ws1.column_dimensions[get_column_letter(col)].width = 11
+        ws1.column_dimensions[get_column_letter(tcm["total_col"])].width = 13
+        ws1.column_dimensions[get_column_letter(tcm["time_col"])].width = 13
+        ws1.column_dimensions[get_column_letter(tcm["rank_col"])].width = 8
+    if individual_tours:
+        ws1.column_dimensions[get_column_letter(rank_sum_col)].width = 11
+        ws1.column_dimensions[get_column_letter(time_sum_col)].width = 13
+        ws1.column_dimensions[get_column_letter(score_sum_col)].width = 13
+        ws1.column_dimensions[get_column_letter(final_rank_col)].width = 10
+
+    ws1.freeze_panes = ws1.cell(row=DATA_ROW_S1, column=2)
+    ws1.auto_filter.ref = f"{get_column_letter(inst_col)}4:{get_column_letter(final_rank_col)}4"
+
+    # ════════════════════════════════════════════════════════════════════════
+    # SHEET 2: Командный зачет  (only if competition has tours)
+    # ════════════════════════════════════════════════════════════════════════
+    if tour_configs:
+        ws2 = wb.create_sheet("Командный зачет")
+        DATA_ROW_S2 = 7  # data starts at row 7 (reference: rows 1-6 are headers)
+
+        # Collect unique institutions in order of first appearance
+        seen: dict[str, None] = {}
+        for item in result.items:
+            inst = item.participant_school or ""
+            seen[inst] = None
+        institutions = list(seen.keys())
+
+        # ── Column index map for sheet 2 ──────────────────────────────────
+        ci2 = 2
+        num2_col = ci2; ci2 += 1       # B: №
+        inst2_col = ci2; ci2 += 1      # C: institution
+
+        tour2_col_map: dict[int, dict] = {}
+
+        # Individual tour columns in sheet 2: total(SUMIF), time(SUMIF), rank
+        for tc in individual_tours:
+            total2_col = ci2; ci2 += 1
+            time2_col = ci2; ci2 += 1
+            rank2_col = ci2; ci2 += 1
+            bonus_col = None
+            if tc.mode == "individual_captains":
+                bonus_col = ci2; ci2 += 1
+            tour2_col_map[tc.tour_number] = {
+                "total_col": total2_col,
+                "time_col": time2_col,
+                "rank_col": rank2_col,
+                "bonus_col": bonus_col,
+                "mode": tc.mode,
+            }
+
+        # Team tour columns: total, time, rank
+        team2_col_map: dict[int, dict] = {}
+        for tc in team_tours:
+            total2_col = ci2; ci2 += 1
+            time2_col = ci2; ci2 += 1
+            rank2_col = ci2; ci2 += 1
+            team2_col_map[tc.tour_number] = {
+                "total_col": total2_col,
+                "time_col": time2_col,
+                "rank_col": rank2_col,
+            }
+
+        rank2_sum_col = ci2; ci2 += 1
+        time2_sum_col = ci2; ci2 += 1
+        final2_rank_col = ci2
+        total_cols_s2 = final2_rank_col
+
+        # ── Rows 1–2: title ───────────────────────────────────────────────
+        ws2.merge_cells(start_row=1, start_column=2, end_row=1, end_column=total_cols_s2)
+        t = ws2.cell(row=1, column=2, value="Командный зачет")
+        t.font = title_font; t.alignment = left
+        ws2.merge_cells(start_row=2, start_column=2, end_row=2, end_column=total_cols_s2)
+        t2 = ws2.cell(row=2, column=2, value=competition_name)
+        t2.font = Font(bold=True, size=11); t2.alignment = left
+
+        # ── Rows 3–6: headers ─────────────────────────────────────────────
+        _fill_row_range(ws2, 3, 2, total_cols_s2, header_fill, border)
+        _fill_row_range(ws2, 4, 2, total_cols_s2, header_fill, border)
+        _fill_row_range(ws2, 5, 2, total_cols_s2, header_fill, border)
+        _fill_row_range(ws2, 6, 2, total_cols_s2, header_fill, border)
+
+        # Rows 3-6 span for №, institution
+        ws2.merge_cells(start_row=3, start_column=num2_col, end_row=6, end_column=num2_col)
+        _h(ws2.cell(row=3, column=num2_col), "№ п/п")
+        ws2.merge_cells(start_row=3, start_column=inst2_col, end_row=6, end_column=inst2_col)
+        _h(ws2.cell(row=3, column=inst2_col), "Наименование команды (ВУЗ)")
+
+        # Group headers (row 5) and column headers (row 6) for individual tours
+        for tc in individual_tours:
+            tm = tour2_col_map[tc.tour_number]
+            span_start = tm["total_col"]
+            span_end = tm["bonus_col"] if tm["bonus_col"] else tm["rank_col"]
+            ws2.merge_cells(start_row=5, start_column=span_start, end_row=5, end_column=span_end)
+            _h(ws2.cell(row=5, column=span_start), f"Тур {tc.tour_number}", fill=tour_fill)
+            _fill_row_range(ws2, 5, span_start + 1, span_end, tour_fill, border)
+
+            _h(ws2.cell(row=6, column=tm["total_col"]), "Итого баллов")
+            _h(ws2.cell(row=6, column=tm["time_col"]), "Время выполнения")
+            _h(ws2.cell(row=6, column=tm["rank_col"]), "Место")
+            if tm["bonus_col"]:
+                _h(ws2.cell(row=6, column=tm["bonus_col"]), "Доп. задание (капитан)")
+
+        for tc in team_tours:
+            tm = team2_col_map[tc.tour_number]
+            ws2.merge_cells(
+                start_row=5, start_column=tm["total_col"],
+                end_row=5, end_column=tm["rank_col"]
+            )
+            _h(ws2.cell(row=5, column=tm["total_col"]), f"Тур {tc.tour_number} (командный)", fill=tour_fill)
+            _fill_row_range(ws2, 5, tm["total_col"] + 1, tm["rank_col"], tour_fill, border)
+            _h(ws2.cell(row=6, column=tm["total_col"]), "Итого баллов")
+            _h(ws2.cell(row=6, column=tm["time_col"]), "Время выполнения")
+            _h(ws2.cell(row=6, column=tm["rank_col"]), "Место")
+
+        # Summary header
+        ws2.merge_cells(
+            start_row=5, start_column=rank2_sum_col,
+            end_row=5, end_column=total_cols_s2
+        )
+        _h(ws2.cell(row=5, column=rank2_sum_col), "Итого")
+        _h(ws2.cell(row=6, column=rank2_sum_col), "Сумма мест")
+        _h(ws2.cell(row=6, column=time2_sum_col), "Суммарное время")
+        _h(ws2.cell(row=6, column=final2_rank_col), "Итоговое место")
+
+        # ── Rows 7+: data ─────────────────────────────────────────────────
+        s1_name = "Личный зачет"
+        inst_cl_s1 = get_column_letter(inst_col)
+
+        for idx, inst in enumerate(institutions):
+            row = DATA_ROW_S2 + idx
+
+            if idx == 0:
+                _c(ws2.cell(row=row, column=num2_col), 1)
+            else:
+                _c(ws2.cell(row=row, column=num2_col),
+                   f"={get_column_letter(num2_col)}{row - 1}+1")
+
+            _d(ws2.cell(row=row, column=inst2_col), inst)
+
+            all_rank_cols = []
+            all_time_cols = []
+
+            # Individual tours: SUMIF formulas
+            for tc in individual_tours:
+                tm = tour2_col_map[tc.tour_number]
+                s1_total_cl = get_column_letter(tour_col_map[tc.tour_number]["total_col"])
+                s1_time_cl = get_column_letter(tour_col_map[tc.tour_number]["time_col"])
+                team_inst_ref = f"C{row}"
+
+                sumif_total = (
+                    f"=SUMIF('{s1_name}'!${inst_cl_s1}:${inst_cl_s1},"
+                    f"{team_inst_ref},"
+                    f"'{s1_name}'!${s1_total_cl}:${s1_total_cl})"
+                )
+                sumif_time = (
+                    f"=SUMIF('{s1_name}'!${inst_cl_s1}:${inst_cl_s1},"
+                    f"{team_inst_ref},"
+                    f"'{s1_name}'!${s1_time_cl}:${s1_time_cl})"
+                )
+
+                # If captain bonus: total includes bonus column
+                if tm["bonus_col"]:
+                    bonus_val = captain_bonus.get(inst, {}).get(tc.tour_number)
+                    _d(ws2.cell(row=row, column=tm["bonus_col"]), bonus_val)
+                    bonus_ref = f"{get_column_letter(tm['bonus_col'])}{row}"
+                    _c(ws2.cell(row=row, column=tm["total_col"]),
+                       f"{sumif_total}+{bonus_ref}")
+                else:
+                    _c(ws2.cell(row=row, column=tm["total_col"]), sumif_total)
+
+                _c(ws2.cell(row=row, column=tm["time_col"]), sumif_time)
+
+                # Rank for this tour
+                total2_cl = get_column_letter(tm["total_col"])
+                time2_cl = get_column_letter(tm["time_col"])
+                _c(ws2.cell(row=row, column=tm["rank_col"]),
+                   _tour_rank_formula(total2_cl, time2_cl, DATA_ROW_S2, row))
+
+                all_rank_cols.append(get_column_letter(tm["rank_col"]))
+                all_time_cols.append(get_column_letter(tm["time_col"]))
+
+            # Team tours: direct values from DB aggregation
+            for tc in team_tours:
+                tm = team2_col_map[tc.tour_number]
+                team_total_val = team_tour_data.get(inst, {}).get(tc.tour_number)
+                _d(ws2.cell(row=row, column=tm["total_col"]), team_total_val)
+
+                tt = tour_time_map.get(tc.tour_number)
+                time_val = None
+                if tt and tt.duration_minutes is not None:
+                    from datetime import timedelta
+                    time_val = timedelta(minutes=tt.duration_minutes)
+                _d(ws2.cell(row=row, column=tm["time_col"]), time_val)
+
+                total2_cl = get_column_letter(tm["total_col"])
+                time2_cl = get_column_letter(tm["time_col"])
+                _c(ws2.cell(row=row, column=tm["rank_col"]),
+                   _tour_rank_formula(total2_cl, time2_cl, DATA_ROW_S2, row))
+
+                all_rank_cols.append(get_column_letter(tm["rank_col"]))
+                all_time_cols.append(get_column_letter(tm["time_col"]))
+
+            # Summary
+            if all_rank_cols:
+                rank_sum_str = "+".join(f"{cl}{row}" for cl in all_rank_cols)
+                _c(ws2.cell(row=row, column=rank2_sum_col), f"={rank_sum_str}")
+
+                time_sum_str = "+".join(f"{cl}{row}" for cl in all_time_cols)
+                _c(ws2.cell(row=row, column=time2_sum_col), f"={time_sum_str}")
+
+                rs2_cl = get_column_letter(rank2_sum_col)
+                st2_cl = get_column_letter(time2_sum_col)
+                _c(ws2.cell(row=row, column=final2_rank_col),
+                   _team_final_rank_formula(rs2_cl, st2_cl, DATA_ROW_S2, row))
+
+        # ── Column widths & freeze ─────────────────────────────────────────
+        ws2.column_dimensions[get_column_letter(num2_col)].width = 5
+        ws2.column_dimensions[get_column_letter(inst2_col)].width = 30
+        for tm in tour2_col_map.values():
+            ws2.column_dimensions[get_column_letter(tm["total_col"])].width = 13
+            ws2.column_dimensions[get_column_letter(tm["time_col"])].width = 13
+            ws2.column_dimensions[get_column_letter(tm["rank_col"])].width = 8
+            if tm["bonus_col"]:
+                ws2.column_dimensions[get_column_letter(tm["bonus_col"])].width = 18
+        for tm in team2_col_map.values():
+            ws2.column_dimensions[get_column_letter(tm["total_col"])].width = 13
+            ws2.column_dimensions[get_column_letter(tm["time_col"])].width = 13
+            ws2.column_dimensions[get_column_letter(tm["rank_col"])].width = 8
+        ws2.column_dimensions[get_column_letter(rank2_sum_col)].width = 11
+        ws2.column_dimensions[get_column_letter(time2_sum_col)].width = 13
+        ws2.column_dimensions[get_column_letter(final2_rank_col)].width = 12
+
+        ws2.freeze_panes = ws2.cell(row=DATA_ROW_S2, column=2)
+
+    # ── Stream response ───────────────────────────────────────────────────
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    safe_name = re.sub(r"[^\w\-]", "_", competition_name)[:40]
+    filename = f"results_table_{safe_name}.xlsx"
+    encoded_filename = quote(filename)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+        },
+    )
+
+
 @router.post("/registrations/{competition_id}/badges-pdf/start")
 async def start_badges_pdf(
     competition_id: UUID,
