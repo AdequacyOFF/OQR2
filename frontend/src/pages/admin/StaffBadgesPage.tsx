@@ -55,7 +55,7 @@ const StaffBadgesPage: React.FC = () => {
 
   const loadCompetitions = async () => {
     try {
-      const { data } = await api.get<{ competitions: CompetitionOption[] }>('admin/competitions');
+      const { data } = await api.get<{ competitions: CompetitionOption[] }>('competitions');
       setCompetitions(data.competitions || []);
     } catch {
       // ignore
