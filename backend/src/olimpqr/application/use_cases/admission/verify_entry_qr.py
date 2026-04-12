@@ -28,7 +28,16 @@ class VerifyEntryQRResult:
     can_proceed: bool
     message: str
     institution_name: str | None = None
+    institution_location: str | None = None
+    is_captain: bool = False
     dob: dt.date | None = None
+    position: str | None = None
+    military_rank: str | None = None
+    passport_series_number: str | None = None
+    passport_issued_by: str | None = None
+    passport_issued_date: dt.date | None = None
+    military_booklet_number: str | None = None
+    military_personal_number: str | None = None
     has_documents: bool = False
 
 
@@ -107,24 +116,7 @@ class VerifyEntryQRUseCase:
             docs = await self.document_repo.get_by_participant(participant.id)
             has_documents = len(docs) > 0
 
-        # 8. Check competition is in progress (admission allowed)
-        if not competition.is_in_progress:
-            return VerifyEntryQRResult(
-                registration_id=registration.id,
-                participant_id=participant.id,
-                participant_name=participant.full_name,
-                participant_school=participant.school,
-                participant_grade=participant.grade,
-                competition_name=competition.name,
-                competition_id=competition.id,
-                can_proceed=False,
-                message=f"Олимпиада не в процессе (статус: {competition.status.value})",
-                institution_name=institution_name,
-                dob=participant.dob,
-                has_documents=has_documents,
-            )
-
-        return VerifyEntryQRResult(
+        common_fields = dict(
             registration_id=registration.id,
             participant_id=participant.id,
             participant_name=participant.full_name,
@@ -132,9 +124,29 @@ class VerifyEntryQRUseCase:
             participant_grade=participant.grade,
             competition_name=competition.name,
             competition_id=competition.id,
+            institution_name=institution_name,
+            institution_location=participant.institution_location,
+            is_captain=participant.is_captain,
+            dob=participant.dob,
+            position=participant.position,
+            military_rank=participant.military_rank,
+            passport_series_number=participant.passport_series_number,
+            passport_issued_by=participant.passport_issued_by,
+            passport_issued_date=participant.passport_issued_date,
+            military_booklet_number=participant.military_booklet_number,
+            military_personal_number=participant.military_personal_number,
+            has_documents=has_documents,
+        )
+
+        if not competition.is_in_progress:
+            return VerifyEntryQRResult(
+                can_proceed=False,
+                message=f"Олимпиада не в процессе (статус: {competition.status.value})",
+                **common_fields,
+            )
+
+        return VerifyEntryQRResult(
             can_proceed=True,
             message="Участник подтверждён. Можно выдать бланк.",
-            institution_name=institution_name,
-            dob=participant.dob,
-            has_documents=has_documents,
+            **common_fields,
         )

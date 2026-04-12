@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
+import { toRoman } from '../../utils/roman';
 import { useNavigate } from 'react-router-dom';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -1399,7 +1400,7 @@ const CompetitionsAdminPage: React.FC = () => {
                         key={`tour-mode-${index}`}
                         style={{ display: 'grid', gridTemplateColumns: '120px 1fr 1fr', gap: 8, alignItems: 'center' }}
                       >
-                        <span className="text-muted">Тур {index + 1}</span>
+                        <span className="text-muted">Тур {toRoman(index + 1)}</span>
                         <select
                           className="input"
                           value={mode}

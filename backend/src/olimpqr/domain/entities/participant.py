@@ -30,6 +30,13 @@ class Participant:
     institution_location: str | None = None
     is_captain: bool = False
     dob: dt.date | None = None
+    position: str | None = None
+    military_rank: str | None = None
+    passport_series_number: str | None = None
+    passport_issued_by: str | None = None
+    passport_issued_date: dt.date | None = None
+    military_booklet_number: str | None = None
+    military_personal_number: str | None = None
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
 
@@ -51,6 +58,13 @@ class Participant:
         institution_location: str | None = None,
         is_captain: bool | None = None,
         dob: dt.date | None = None,
+        position: str | None = None,
+        military_rank: str | None = None,
+        passport_series_number: str | None = None,
+        passport_issued_by: str | None = None,
+        passport_issued_date: dt.date | None = None,
+        military_booklet_number: str | None = None,
+        military_personal_number: str | None = None,
     ):
         """Update participant profile."""
         if full_name is not None:
@@ -75,5 +89,19 @@ class Participant:
             self.is_captain = is_captain
         if dob is not None:
             self.dob = dob
+        if position is not None:
+            self.position = position or None
+        if military_rank is not None:
+            self.military_rank = military_rank or None
+        if passport_series_number is not None:
+            self.passport_series_number = passport_series_number or None
+        if passport_issued_by is not None:
+            self.passport_issued_by = passport_issued_by or None
+        if passport_issued_date is not None:
+            self.passport_issued_date = passport_issued_date
+        if military_booklet_number is not None:
+            self.military_booklet_number = military_booklet_number or None
+        if military_personal_number is not None:
+            self.military_personal_number = military_personal_number or None
 
         self.updated_at = datetime.utcnow()

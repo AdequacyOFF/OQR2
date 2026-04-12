@@ -28,6 +28,13 @@ class ParticipantRepositoryImpl(ParticipantRepository):
             institution_location=entity.institution_location,
             is_captain=entity.is_captain,
             dob=entity.dob,
+            position=entity.position,
+            military_rank=entity.military_rank,
+            passport_series_number=entity.passport_series_number,
+            passport_issued_by=entity.passport_issued_by,
+            passport_issued_date=entity.passport_issued_date,
+            military_booklet_number=entity.military_booklet_number,
+            military_personal_number=entity.military_personal_number,
             created_at=entity.created_at,
             updated_at=entity.updated_at
         )
@@ -72,6 +79,13 @@ class ParticipantRepositoryImpl(ParticipantRepository):
         model.institution_location = entity.institution_location
         model.is_captain = entity.is_captain
         model.dob = entity.dob
+        model.position = entity.position
+        model.military_rank = entity.military_rank
+        model.passport_series_number = entity.passport_series_number
+        model.passport_issued_by = entity.passport_issued_by
+        model.passport_issued_date = entity.passport_issued_date
+        model.military_booklet_number = entity.military_booklet_number
+        model.military_personal_number = entity.military_personal_number
         model.updated_at = entity.updated_at
 
         await self.session.flush()
@@ -112,6 +126,13 @@ class ParticipantRepositoryImpl(ParticipantRepository):
             institution_location=model.institution_location,
             is_captain=model.is_captain,
             dob=model.dob,
+            position=model.position,
+            military_rank=model.military_rank,
+            passport_series_number=model.passport_series_number,
+            passport_issued_by=model.passport_issued_by,
+            passport_issued_date=model.passport_issued_date,
+            military_booklet_number=model.military_booklet_number,
+            military_personal_number=model.military_personal_number,
             created_at=model.created_at,
             updated_at=model.updated_at
         )

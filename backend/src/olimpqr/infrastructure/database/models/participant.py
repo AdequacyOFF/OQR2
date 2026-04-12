@@ -65,6 +65,13 @@ class ParticipantModel(Base):
         Date,
         nullable=True
     )
+    position: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    military_rank: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    passport_series_number: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    passport_issued_by: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    passport_issued_date: Mapped[Optional[dt.date]] = mapped_column(Date, nullable=True)
+    military_booklet_number: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    military_personal_number: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         nullable=False,
         default=datetime.utcnow

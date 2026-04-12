@@ -18,6 +18,7 @@ from .badge_photo import BadgePhotoModel
 from .badge_template import BadgeTemplateModel
 from .user_competition_access import UserCompetitionAccessModel
 from .tour_time import TourTimeModel
+from .staff_badge import StaffBadgeModel
 
 __all__ = [
     "UserModel",
@@ -38,4 +39,5 @@ __all__ = [
     "BadgeTemplateModel",
     "UserCompetitionAccessModel",
     "TourTimeModel",
+    "StaffBadgeModel",
 ]

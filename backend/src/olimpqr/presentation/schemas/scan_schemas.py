@@ -1,5 +1,6 @@
 """Scan-related Pydantic schemas."""
 
+import datetime as dt
 from pydantic import BaseModel, Field
 from uuid import UUID
 from datetime import datetime
@@ -80,6 +81,18 @@ class ResolveQRResponse(BaseModel):
     attempt_id: UUID
     tour_number: Optional[int] = Field(None, description="Tour number extracted from QR (if A3-cover)")
     participant_name: str
+    participant_school: Optional[str] = None
+    institution_name: Optional[str] = None
+    institution_location: Optional[str] = None
+    is_captain: bool = False
+    dob: Optional[dt.date] = None
+    position: Optional[str] = None
+    military_rank: Optional[str] = None
+    passport_series_number: Optional[str] = None
+    passport_issued_by: Optional[str] = None
+    passport_issued_date: Optional[dt.date] = None
+    military_booklet_number: Optional[str] = None
+    military_personal_number: Optional[str] = None
     competition_id: UUID
     competition_name: str
     is_special: bool

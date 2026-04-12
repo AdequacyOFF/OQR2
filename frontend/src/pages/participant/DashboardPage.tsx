@@ -267,6 +267,48 @@ const DashboardPage: React.FC = () => {
                 <span className="info-label">Класс:</span>
                 <span className="info-value">{profile.grade}</span>
               </div>
+              {profile.position && (
+                <div className="info-row">
+                  <span className="info-label">Должность:</span>
+                  <span className="info-value">{profile.position}</span>
+                </div>
+              )}
+              {profile.military_rank && (
+                <div className="info-row">
+                  <span className="info-label">Воинское звание:</span>
+                  <span className="info-value">{profile.military_rank}</span>
+                </div>
+              )}
+              {profile.passport_series_number && (
+                <div className="info-row">
+                  <span className="info-label">Паспорт:</span>
+                  <span className="info-value">{profile.passport_series_number}</span>
+                </div>
+              )}
+              {profile.passport_issued_by && (
+                <div className="info-row">
+                  <span className="info-label">Выдан:</span>
+                  <span className="info-value">{profile.passport_issued_by}</span>
+                </div>
+              )}
+              {profile.passport_issued_date && (
+                <div className="info-row">
+                  <span className="info-label">Дата выдачи:</span>
+                  <span className="info-value">{new Date(profile.passport_issued_date).toLocaleDateString('ru-RU')}</span>
+                </div>
+              )}
+              {profile.military_booklet_number && (
+                <div className="info-row">
+                  <span className="info-label">Военный билет:</span>
+                  <span className="info-value">{profile.military_booklet_number}</span>
+                </div>
+              )}
+              {profile.military_personal_number && (
+                <div className="info-row">
+                  <span className="info-label">Личный номер:</span>
+                  <span className="info-value">{profile.military_personal_number}</span>
+                </div>
+              )}
             </div>
           )}
         </div>

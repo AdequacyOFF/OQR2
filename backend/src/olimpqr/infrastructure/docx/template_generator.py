@@ -19,6 +19,7 @@ from PIL import Image, ImageOps
 
 from ...config import settings
 from ...domain.services import QRService
+from ...shared.roman import arabic_to_roman
 
 
 @dataclass
@@ -96,13 +97,14 @@ class WordTemplateGenerator:
         """Render answer blank DOCX from template."""
         self.ensure_templates_exist()
         doc = Document(str(self.answer_template_path))
+        roman_tour = arabic_to_roman(tour_number)
         self._replace_text_tokens(
             doc,
             {
-                "{{TOUR_NUMBER}}": str(tour_number),
+                "{{TOUR_NUMBER}}": roman_tour,
                 "{{TASK_NUMBER}}": str(task_number),
                 "{{TOUR_MODE}}": mode,
-                "{{TOUR_TASK}}": tour_task or f"{tour_number}/{task_number}",
+                "{{TOUR_TASK}}": tour_task or f"{roman_tour}/{task_number}",
             },
         )
         qr_bytes = self._build_qr_png(qr_payload)
@@ -122,12 +124,12 @@ class WordTemplateGenerator:
         self._replace_text_tokens(
             doc,
             {
-                "{{TOUR_NUMBER}}": str(tour_number),
+                "{{TOUR_NUMBER}}": arabic_to_roman(tour_number),
                 "{{TOUR_MODE}}": mode,
             },
         )
         qr_bytes = self._build_qr_png(qr_payload)
-        self._replace_image_token(doc, "{{QR_IMAGE}}", qr_bytes, width_mm=28)
+        self._replace_image_token(doc, "{{QR_IMAGE}}", qr_bytes, width_mm=18)
         return self._save_doc_to_bytes(doc)
 
     def generate_badge_docx(

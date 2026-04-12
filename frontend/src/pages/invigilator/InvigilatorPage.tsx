@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import api from '../../api/client';
+import { toRoman } from '../../utils/roman';
 import Layout from '../../components/layout/Layout';
 import QRScanner from '../../components/qr/QRScanner';
 import QRCodeDisplay from '../../components/qr/QRCodeDisplay';
@@ -17,6 +18,18 @@ interface ResolveSheetResult {
   attempt_id: string;
   answer_sheet_id: string | null;
   participant_name: string;
+  participant_school: string | null;
+  institution_name: string | null;
+  institution_location: string | null;
+  is_captain: boolean;
+  dob: string | null;
+  position: string | null;
+  military_rank: string | null;
+  passport_series_number: string | null;
+  passport_issued_by: string | null;
+  passport_issued_date: string | null;
+  military_booklet_number: string | null;
+  military_personal_number: string | null;
   competition_id: string;
   competition_name: string;
   is_special_competition?: boolean;
@@ -469,6 +482,21 @@ const InvigilatorPage: React.FC = () => {
             )}
           </h2>
 
+          {resolved && (resolved.institution_name || resolved.position || resolved.military_rank || resolved.passport_series_number) && (
+            <div style={{ background: '#f0f9ff', borderRadius: 8, padding: 12, marginBottom: 16, fontSize: 13, color: '#555' }}>
+              {resolved.institution_name && <div><strong>Учреждение:</strong> {resolved.institution_name}{resolved.institution_location ? ` (${resolved.institution_location})` : ''}</div>}
+              {resolved.position && <div><strong>Должность:</strong> {resolved.position}</div>}
+              {resolved.military_rank && <div><strong>Воинское звание:</strong> {resolved.military_rank}</div>}
+              {resolved.is_captain && <div style={{ color: '#2563eb', fontWeight: 600 }}>Капитан команды</div>}
+              {resolved.dob && <div><strong>Дата рождения:</strong> {new Date(resolved.dob).toLocaleDateString('ru-RU')}</div>}
+              {resolved.passport_series_number && <div><strong>Паспорт:</strong> {resolved.passport_series_number}</div>}
+              {resolved.passport_issued_by && <div><strong>Выдан:</strong> {resolved.passport_issued_by}</div>}
+              {resolved.passport_issued_date && <div><strong>Дата выдачи:</strong> {new Date(resolved.passport_issued_date).toLocaleDateString('ru-RU')}</div>}
+              {resolved.military_booklet_number && <div><strong>Военный билет:</strong> {resolved.military_booklet_number}</div>}
+              {resolved.military_personal_number && <div><strong>Личный номер:</strong> {resolved.military_personal_number}</div>}
+            </div>
+          )}
+
           <div className="mb-16">
             <h3 className="mb-8">Записать событие</h3>
             <div className="flex gap-8" style={{ flexWrap: 'wrap' }}>
@@ -557,7 +585,7 @@ const InvigilatorPage: React.FC = () => {
                 >
                   {(resolved.special_tours || []).map((tour) => (
                     <option key={tour.tour_number} value={tour.tour_number}>
-                      {`Тур ${tour.tour_number}`}
+                      {`Тур ${toRoman(tour.tour_number)}`}
                     </option>
                   ))}
                 </select>

@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import api from '../../api/client';
+import { toRoman } from '../../utils/roman';
 import Layout from '../../components/layout/Layout';
 import Button from '../../components/common/Button';
 import QRScanner from '../../components/qr/QRScanner';
@@ -9,6 +10,18 @@ interface ResolveQRResponse {
   attempt_id: string;
   tour_number: number | null;
   participant_name: string;
+  participant_school: string | null;
+  institution_name: string | null;
+  institution_location: string | null;
+  is_captain: boolean;
+  dob: string | null;
+  position: string | null;
+  military_rank: string | null;
+  passport_series_number: string | null;
+  passport_issued_by: string | null;
+  passport_issued_date: string | null;
+  military_booklet_number: string | null;
+  military_personal_number: string | null;
   competition_id: string;
   competition_name: string;
   is_special: boolean;
@@ -214,7 +227,15 @@ const ManualQRScoringPage: React.FC = () => {
                 <div style={{ color: '#555', fontSize: 13 }}>{resolved.competition_name}</div>
                 {resolved.tour_number && (
                   <div style={{ color: '#2563eb', fontSize: 13, marginTop: 4 }}>
-                    Тур {resolved.tour_number}
+                    Тур {toRoman(resolved.tour_number)}
+                  </div>
+                )}
+                {(resolved.institution_name || resolved.position || resolved.military_rank) && (
+                  <div style={{ borderTop: '1px solid #dbeafe', marginTop: 8, paddingTop: 8, fontSize: 13, color: '#555' }}>
+                    {resolved.institution_name && <div>{resolved.institution_name}{resolved.institution_location ? ` (${resolved.institution_location})` : ''}</div>}
+                    {resolved.position && <div>Должность: {resolved.position}</div>}
+                    {resolved.military_rank && <div>Воинское звание: {resolved.military_rank}</div>}
+                    {resolved.is_captain && <div style={{ color: '#2563eb', fontWeight: 600 }}>Капитан команды</div>}
                   </div>
                 )}
               </div>
@@ -315,7 +336,7 @@ const ManualQRScoringPage: React.FC = () => {
                 </div>
                 <div style={{ color: '#555', fontSize: 13 }}>{resolved.competition_name}</div>
                 {resolved.tour_number && (
-                  <div style={{ fontSize: 13, color: '#555' }}>Тур {resolved.tour_number}</div>
+                  <div style={{ fontSize: 13, color: '#555' }}>Тур {toRoman(resolved.tour_number)}</div>
                 )}
                 <div style={{ marginTop: 8, fontSize: 16, fontWeight: 600 }}>
                   Итоговый балл: {resultAttempt.score_total ?? '—'}

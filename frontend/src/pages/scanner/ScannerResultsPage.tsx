@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api from '../../api/client';
+import { toRoman } from '../../utils/roman';
 import Layout from '../../components/layout/Layout';
 import Button from '../../components/common/Button';
 import ScoringProgressTable from '../../components/ScoringProgressTable';
@@ -216,7 +217,7 @@ const ScannerResultsPage: React.FC = () => {
                         }}
                       >
                         <span style={{ minWidth: 56, fontSize: 13, fontWeight: 600 }}>
-                          Тур {t}
+                          Тур {toRoman(t)}
                         </span>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                           <label style={{ fontSize: 12, color: '#6b7280', minWidth: 48 }}>

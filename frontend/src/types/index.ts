@@ -25,6 +25,13 @@ export interface ParticipantProfile {
   institution_location: string | null;
   is_captain: boolean;
   dob: string | null;
+  position: string | null;
+  military_rank: string | null;
+  passport_series_number: string | null;
+  passport_issued_by: string | null;
+  passport_issued_date: string | null;
+  military_booklet_number: string | null;
+  military_personal_number: string | null;
   created_at: string;
   updated_at: string;
 }

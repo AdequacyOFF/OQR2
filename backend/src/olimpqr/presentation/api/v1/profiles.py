@@ -48,6 +48,13 @@ async def get_my_profile(
         institution_location=participant.institution_location,
         is_captain=participant.is_captain,
         dob=participant.dob,
+        position=participant.position,
+        military_rank=participant.military_rank,
+        passport_series_number=participant.passport_series_number,
+        passport_issued_by=participant.passport_issued_by,
+        passport_issued_date=participant.passport_issued_date,
+        military_booklet_number=participant.military_booklet_number,
+        military_personal_number=participant.military_personal_number,
         created_at=participant.created_at,
         updated_at=participant.updated_at
     )
@@ -83,6 +90,13 @@ async def update_my_profile(
             institution_location=request.institution_location,
             is_captain=request.is_captain,
             dob=request.dob,
+            position=request.position,
+            military_rank=request.military_rank,
+            passport_series_number=request.passport_series_number,
+            passport_issued_by=request.passport_issued_by,
+            passport_issued_date=request.passport_issued_date,
+            military_booklet_number=request.military_booklet_number,
+            military_personal_number=request.military_personal_number,
         )
 
         # Save to database
@@ -98,6 +112,13 @@ async def update_my_profile(
             institution_location=updated_participant.institution_location,
             is_captain=updated_participant.is_captain,
             dob=updated_participant.dob,
+            position=updated_participant.position,
+            military_rank=updated_participant.military_rank,
+            passport_series_number=updated_participant.passport_series_number,
+            passport_issued_by=updated_participant.passport_issued_by,
+            passport_issued_date=updated_participant.passport_issued_date,
+            military_booklet_number=updated_participant.military_booklet_number,
+            military_personal_number=updated_participant.military_personal_number,
             created_at=updated_participant.created_at,
             updated_at=updated_participant.updated_at
         )

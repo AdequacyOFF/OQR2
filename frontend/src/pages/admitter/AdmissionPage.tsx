@@ -25,7 +25,16 @@ interface VerifyResponse {
   can_proceed: boolean;
   message: string;
   institution_name: string | null;
+  institution_location: string | null;
+  is_captain: boolean;
   dob: string | null;
+  position: string | null;
+  military_rank: string | null;
+  passport_series_number: string | null;
+  passport_issued_by: string | null;
+  passport_issued_date: string | null;
+  military_booklet_number: string | null;
+  military_personal_number: string | null;
   has_documents: boolean;
   participant_id?: string;
 }
@@ -327,7 +336,7 @@ const AdmissionPage: React.FC = () => {
               {verifyData.institution_name && (
                 <tr>
                   <td><strong>Учреждение</strong></td>
-                  <td>{verifyData.institution_name}</td>
+                  <td>{verifyData.institution_name}{verifyData.institution_location ? ` (${verifyData.institution_location})` : ''}</td>
                 </tr>
               )}
               <tr>
@@ -337,7 +346,55 @@ const AdmissionPage: React.FC = () => {
               {verifyData.dob && (
                 <tr>
                   <td><strong>Дата рождения</strong></td>
-                  <td>{verifyData.dob}</td>
+                  <td>{new Date(verifyData.dob).toLocaleDateString('ru-RU')}</td>
+                </tr>
+              )}
+              {verifyData.is_captain && (
+                <tr>
+                  <td><strong>Капитан</strong></td>
+                  <td style={{ color: '#2563eb', fontWeight: 600 }}>Да</td>
+                </tr>
+              )}
+              {verifyData.position && (
+                <tr>
+                  <td><strong>Должность</strong></td>
+                  <td>{verifyData.position}</td>
+                </tr>
+              )}
+              {verifyData.military_rank && (
+                <tr>
+                  <td><strong>Воинское звание</strong></td>
+                  <td>{verifyData.military_rank}</td>
+                </tr>
+              )}
+              {verifyData.passport_series_number && (
+                <tr>
+                  <td><strong>Паспорт</strong></td>
+                  <td>{verifyData.passport_series_number}</td>
+                </tr>
+              )}
+              {verifyData.passport_issued_by && (
+                <tr>
+                  <td><strong>Выдан</strong></td>
+                  <td>{verifyData.passport_issued_by}</td>
+                </tr>
+              )}
+              {verifyData.passport_issued_date && (
+                <tr>
+                  <td><strong>Дата выдачи</strong></td>
+                  <td>{new Date(verifyData.passport_issued_date).toLocaleDateString('ru-RU')}</td>
+                </tr>
+              )}
+              {verifyData.military_booklet_number && (
+                <tr>
+                  <td><strong>Военный билет</strong></td>
+                  <td>{verifyData.military_booklet_number}</td>
+                </tr>
+              )}
+              {verifyData.military_personal_number && (
+                <tr>
+                  <td><strong>Личный номер</strong></td>
+                  <td>{verifyData.military_personal_number}</td>
                 </tr>
               )}
               <tr>

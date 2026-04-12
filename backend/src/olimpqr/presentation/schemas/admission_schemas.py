@@ -22,7 +22,16 @@ class VerifyEntryQRResponse(BaseModel):
     can_proceed: bool
     message: str
     institution_name: str | None = None
+    institution_location: str | None = None
+    is_captain: bool = False
     dob: dt.date | None = None
+    position: str | None = None
+    military_rank: str | None = None
+    passport_series_number: str | None = None
+    passport_issued_by: str | None = None
+    passport_issued_date: dt.date | None = None
+    military_booklet_number: str | None = None
+    military_personal_number: str | None = None
     has_documents: bool = False
 
     model_config = {

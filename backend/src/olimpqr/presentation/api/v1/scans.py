@@ -392,10 +392,34 @@ async def resolve_qr(
                 task_numbers = [int(t) for t in tour["task_numbers"]]
                 break
 
+    participant = registration.participant
+    institution_name = None
+    if participant.institution_id:
+        from ....infrastructure.database.models import InstitutionModel
+
+        inst_result = await db.execute(
+            select(InstitutionModel).where(InstitutionModel.id == participant.institution_id)
+        )
+        inst_row = inst_result.scalar_one_or_none()
+        if inst_row:
+            institution_name = inst_row.name
+
     return ResolveQRResponse(
         attempt_id=attempt.id,
         tour_number=tour_number,
-        participant_name=registration.participant.full_name,
+        participant_name=participant.full_name,
+        participant_school=participant.school,
+        institution_name=institution_name,
+        institution_location=participant.institution_location,
+        is_captain=participant.is_captain,
+        dob=participant.dob,
+        position=participant.position,
+        military_rank=participant.military_rank,
+        passport_series_number=participant.passport_series_number,
+        passport_issued_by=participant.passport_issued_by,
+        passport_issued_date=participant.passport_issued_date,
+        military_booklet_number=participant.military_booklet_number,
+        military_personal_number=participant.military_personal_number,
         competition_id=competition.id,
         competition_name=competition.name,
         is_special=bool(competition.is_special),

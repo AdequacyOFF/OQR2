@@ -1,5 +1,6 @@
 """Invigilator-related Pydantic schemas."""
 
+import datetime as dt
 from pydantic import BaseModel, Field
 from uuid import UUID
 from datetime import datetime
@@ -72,6 +73,18 @@ class ResolveSheetTokenResponse(BaseModel):
     attempt_id: UUID
     answer_sheet_id: UUID | None = None
     participant_name: str
+    participant_school: str | None = None
+    institution_name: str | None = None
+    institution_location: str | None = None
+    is_captain: bool = False
+    dob: dt.date | None = None
+    position: str | None = None
+    military_rank: str | None = None
+    passport_series_number: str | None = None
+    passport_issued_by: str | None = None
+    passport_issued_date: dt.date | None = None
+    military_booklet_number: str | None = None
+    military_personal_number: str | None = None
     competition_id: UUID
     competition_name: str
     is_special_competition: bool = False

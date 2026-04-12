@@ -30,6 +30,7 @@ import InstitutionsPage from '../pages/admin/InstitutionsPage';
 import RoomsPage from '../pages/admin/RoomsPage';
 import BadgeEditorPage from '../pages/admin/BadgeEditorPage';
 import CompetitionStaffPage from '../pages/admin/CompetitionStaffPage';
+import StaffBadgesPage from '../pages/admin/StaffBadgesPage';
 
 // Invigilator pages
 import InvigilatorPage from '../pages/invigilator/InvigilatorPage';
@@ -224,6 +225,14 @@ const AppRouter: React.FC = () => {
           element={
             <ProtectedRoute allowedRoles={['admin']}>
               <CompetitionStaffPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin/staff-badges"
+          element={
+            <ProtectedRoute allowedRoles={['admin']}>
+              <StaffBadgesPage />
             </ProtectedRoute>
           }
         />

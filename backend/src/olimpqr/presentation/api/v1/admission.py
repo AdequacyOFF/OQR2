@@ -74,7 +74,16 @@ async def verify_entry_qr(
             can_proceed=result.can_proceed,
             message=result.message,
             institution_name=result.institution_name,
+            institution_location=result.institution_location,
+            is_captain=result.is_captain,
             dob=result.dob,
+            position=result.position,
+            military_rank=result.military_rank,
+            passport_series_number=result.passport_series_number,
+            passport_issued_by=result.passport_issued_by,
+            passport_issued_date=result.passport_issued_date,
+            military_booklet_number=result.military_booklet_number,
+            military_personal_number=result.military_personal_number,
             has_documents=result.has_documents,
         )
     except ValueError as e:

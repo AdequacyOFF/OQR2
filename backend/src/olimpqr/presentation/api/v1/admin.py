@@ -48,6 +48,7 @@ from ....application.use_cases.registration.register_for_competition import (
 )
 from ....application.use_cases.competitions.get_scoring_progress import GetScoringProgressUseCase
 from ....config import settings
+from ....shared.roman import arabic_to_roman
 from ...schemas.admin_schemas import (
     CreateStaffRequest,
     UpdateUserRequest,
@@ -73,6 +74,7 @@ from ...schemas.admin_schemas import (
     TourConfigItem,
 )
 from ...dependencies import require_role
+from ...utils.special_import import parse_uchastniki_xlsx, derive_imported_email
 
 router = APIRouter()
 
@@ -251,6 +253,11 @@ def _parse_import_file(file_name: str, file_bytes: bytes) -> list[dict[str, Any]
         return [_normalize_record(row) for row in reader]
 
     if lower_name.endswith(".xlsx"):
+        # First try the official «Участники» template (positional columns).
+        templated = parse_uchastniki_xlsx(file_bytes)
+        if templated is not None:
+            return templated
+
         try:
             from openpyxl import load_workbook
         except ImportError as exc:
@@ -1914,7 +1921,7 @@ async def export_scoring_progress_excel(
             start_c, span = tour_col_spans[i]
             if span > 1:
                 ws.merge_cells(start_row=3, start_column=start_c, end_row=3, end_column=start_c + span - 1)
-            label = f"Тур {tc.tour_number} — {_MODE_LABELS.get(tc.mode, tc.mode)}"
+            label = f"Тур {arabic_to_roman(tc.tour_number)} — {_MODE_LABELS.get(tc.mode, tc.mode)}"
             _set_tour_header(ws.cell(row=3, column=start_c), label)
             # Fill remaining merged cells with tour fill
             for c in range(start_c + 1, start_c + span):
@@ -2213,7 +2220,7 @@ async def export_results_table(
         span_end = tcm["rank_col"]
         if span_end > span_start:
             ws1.merge_cells(start_row=3, start_column=span_start, end_row=3, end_column=span_end)
-        _h(ws1.cell(row=3, column=span_start), f"Тур {tc.tour_number}", fill=tour_fill)
+        _h(ws1.cell(row=3, column=span_start), f"Тур {arabic_to_roman(tc.tour_number)}", fill=tour_fill)
         _fill_row_range(ws1, 3, span_start + 1, span_end, tour_fill, border)
 
     if individual_tours:
@@ -2423,7 +2430,7 @@ async def export_results_table(
             span_start = tm["total_col"]
             span_end = tm["bonus_col"] if tm["bonus_col"] else tm["rank_col"]
             ws2.merge_cells(start_row=5, start_column=span_start, end_row=5, end_column=span_end)
-            _h(ws2.cell(row=5, column=span_start), f"Тур {tc.tour_number}", fill=tour_fill)
+            _h(ws2.cell(row=5, column=span_start), f"Тур {arabic_to_roman(tc.tour_number)}", fill=tour_fill)
             _fill_row_range(ws2, 5, span_start + 1, span_end, tour_fill, border)
 
             _h(ws2.cell(row=6, column=tm["total_col"]), "Итого баллов")
@@ -2438,7 +2445,7 @@ async def export_results_table(
                 start_row=5, start_column=tm["total_col"],
                 end_row=5, end_column=tm["rank_col"]
             )
-            _h(ws2.cell(row=5, column=tm["total_col"]), f"Тур {tc.tour_number} (командный)", fill=tour_fill)
+            _h(ws2.cell(row=5, column=tm["total_col"]), f"Тур {arabic_to_roman(tc.tour_number)} (командный)", fill=tour_fill)
             _fill_row_range(ws2, 5, tm["total_col"] + 1, tm["rank_col"], tour_fill, border)
             _h(ws2.cell(row=6, column=tm["total_col"]), "Итого баллов")
             _h(ws2.cell(row=6, column=tm["time_col"]), "Время выполнения")
@@ -3317,7 +3324,7 @@ async def print_seating_plan(
         "</style></head><body>"
         "<h1>Схема рассадки</h1>"
         f"<div><strong>Олимпиада:</strong> {esc(seating['competition_name'])}</div>"
-        f"<div class='muted'>Тур: {esc(seating.get('tour_number'))} | Режим: {esc(mode_label)}</div>"
+        f"<div class='muted'>Тур: {esc(arabic_to_roman(int(seating['tour_number'])) if seating.get('tour_number') else '—')} | Режим: {esc(mode_label)}</div>"
         f"{''.join(room_sections)}"
         "</body></html>"
     )
@@ -3603,10 +3610,6 @@ async def import_special_participants(
             if len(institution_name) < 2:
                 raise ValueError("Поле ВУЗ/учреждение обязательно")
 
-            email = str(normalized.get("email") or "").strip().lower()
-            if not email:
-                email = f"imported.{uuid4().hex[:16]}@participants.local"
-
             institution_location_raw = normalized.get("institution_location")
             institution_location = (
                 str(institution_location_raw).strip()
@@ -3615,6 +3618,25 @@ async def import_special_participants(
             )
             is_captain = _parse_bool(normalized.get("is_captain"))
             dob = _parse_dob(normalized.get("dob"))
+
+            email = str(normalized.get("email") or "").strip().lower()
+            if not email:
+                email = derive_imported_email(full_name, dob)
+
+            def _opt_str(key: str) -> str | None:
+                value = normalized.get(key)
+                if value is None:
+                    return None
+                text = str(value).strip()
+                return text or None
+
+            position = _opt_str("position")
+            military_rank = _opt_str("military_rank")
+            passport_series_number = _opt_str("passport_series_number")
+            passport_issued_by = _opt_str("passport_issued_by")
+            passport_issued_date = _parse_dob(normalized.get("passport_issued_date"))
+            military_booklet_number = _opt_str("military_booklet_number")
+            military_personal_number = _opt_str("military_personal_number")
 
             institution = await institution_repo.get_by_name(institution_name)
             if not institution:
@@ -3657,6 +3679,13 @@ async def import_special_participants(
                         institution_location=institution_location,
                         is_captain=is_captain,
                         dob=dob,
+                        position=position,
+                        military_rank=military_rank,
+                        passport_series_number=passport_series_number,
+                        passport_issued_by=passport_issued_by,
+                        passport_issued_date=passport_issued_date,
+                        military_booklet_number=military_booklet_number,
+                        military_personal_number=military_personal_number,
                     )
                 )
                 summary["created_participants"] += 1
@@ -3667,6 +3696,13 @@ async def import_special_participants(
                     institution_location=institution_location,
                     is_captain=is_captain,
                     dob=dob,
+                    position=position,
+                    military_rank=military_rank,
+                    passport_series_number=passport_series_number,
+                    passport_issued_by=passport_issued_by,
+                    passport_issued_date=passport_issued_date,
+                    military_booklet_number=military_booklet_number,
+                    military_personal_number=military_personal_number,
                 )
                 participant.institution_id = institution.id
                 await participant_repo.update(participant)

@@ -18,6 +18,13 @@ class ParticipantProfileResponse(BaseModel):
     institution_location: Optional[str] = None
     is_captain: bool = False
     dob: Optional[dt.date] = None
+    position: Optional[str] = None
+    military_rank: Optional[str] = None
+    passport_series_number: Optional[str] = None
+    passport_issued_by: Optional[str] = None
+    passport_issued_date: Optional[dt.date] = None
+    military_booklet_number: Optional[str] = None
+    military_personal_number: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -44,6 +51,13 @@ class UpdateProfileRequest(BaseModel):
     institution_location: Optional[str] = Field(None, min_length=2, description="Город/филиал учебного учреждения")
     is_captain: Optional[bool] = Field(None, description="Является ли участник капитаном")
     dob: Optional[dt.date] = Field(None, description="Дата рождения")
+    position: Optional[str] = Field(None, description="Должность")
+    military_rank: Optional[str] = Field(None, description="Воинское звание")
+    passport_series_number: Optional[str] = Field(None, description="Серия и номер паспорта")
+    passport_issued_by: Optional[str] = Field(None, description="Кем выдан паспорт")
+    passport_issued_date: Optional[dt.date] = Field(None, description="Дата выдачи паспорта")
+    military_booklet_number: Optional[str] = Field(None, description="Номер военного билета")
+    military_personal_number: Optional[str] = Field(None, description="Личный номер")
 
     model_config = {
         "json_schema_extra": {

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import api from '../api/client';
 import { ScoringProgressItem, ScoringProgressResponse, TourTimeItem } from '../types';
+import { toRoman } from '../utils/roman';
 
 interface Props {
   competitionId: string;
@@ -242,7 +243,7 @@ const ScoringProgressTable: React.FC<Props> = ({
               name: 'ФИО', school: 'Школа', variant: 'Вар.', total: 'Итог',
             };
             const label = k.col.startsWith('tour_')
-              ? `Тур ${k.col.slice(5)}`
+              ? `Тур ${toRoman(k.col.slice(5))}`
               : (labels[k.col] ?? k.col);
             return (
               <span key={k.col}>
@@ -288,7 +289,7 @@ const ScoringProgressTable: React.FC<Props> = ({
               const modeLabel = cfg ? MODE_LABELS[cfg.mode] : null;
               return makeTh(`tour_${t}`, (
                 <div>
-                  <div>Тур {t}</div>
+                  <div>Тур {toRoman(t)}</div>
                   {modeLabel && (
                     <div style={{ fontSize: 10, fontWeight: 400, color: '#6b7280' }}>
                       {modeLabel}

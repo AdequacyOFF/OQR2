@@ -13,6 +13,7 @@ from .institutions import router as institutions_router
 from .rooms import router as rooms_router
 from .invigilator import router as invigilator_router
 from .documents import router as documents_router
+from .staff_badges import router as staff_badges_router
 
 api_router = APIRouter()
 
@@ -29,5 +30,6 @@ api_router.include_router(institutions_router, prefix="/institutions", tags=["In
 api_router.include_router(rooms_router, prefix="/rooms", tags=["Rooms"])
 api_router.include_router(invigilator_router, prefix="/invigilator", tags=["Invigilator"])
 api_router.include_router(documents_router, prefix="/documents", tags=["Documents"])
+api_router.include_router(staff_badges_router, prefix="/admin/staff-badges", tags=["Staff Badges"])
 
 __all__ = ["api_router"]

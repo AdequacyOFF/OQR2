@@ -44,6 +44,7 @@ const Header: React.FC = () => {
             <Link to="/admin/competitions">Олимпиады</Link>
             <Link to="/admin/users">Пользователи</Link>
             <Link to="/admin/institutions">Учреждения</Link>
+            <Link to="/admin/staff-badges">Бейджи руководителей</Link>
             <Link to="/admin/audit-log">Журнал</Link>
           </>
         );

@@ -67,6 +67,12 @@ const AdminDashboardPage: React.FC = () => {
             <p className="text-muted mt-16">Управление аудиториями и рассадкой</p>
           </div>
         </Link>
+        <Link to="/admin/staff-badges" style={{ textDecoration: 'none' }}>
+          <div className="card text-center">
+            <h2>Бейджи руководителей</h2>
+            <p className="text-muted mt-16">Генерация бейджей для представителей</p>
+          </div>
+        </Link>
       </div>
 
       <div className="card mt-16">
