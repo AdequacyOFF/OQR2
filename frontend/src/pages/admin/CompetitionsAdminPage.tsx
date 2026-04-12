@@ -96,6 +96,7 @@ const CompetitionsAdminPage: React.FC = () => {
   const [registering, setRegistering] = useState(false);
   const [specialTourModes, setSpecialTourModes] = useState<string[]>([]);
   const [specialTourTasks, setSpecialTourTasks] = useState<string[]>([]);
+  const [specialTourCaptainsTask, setSpecialTourCaptainsTask] = useState<boolean[]>([]);
   const [specialCaptainsRoomId, setSpecialCaptainsRoomId] = useState('');
   const [specialRoomLayouts, setSpecialRoomLayouts] = useState<RoomLayoutState>({});
   const [teamTableMergesTour3, setTeamTableMergesTour3] = useState<TeamTableMergeState>({});
@@ -171,6 +172,7 @@ const CompetitionsAdminPage: React.FC = () => {
     if (!isSpecialCompetition) {
       setSpecialTourModes([]);
       setSpecialTourTasks([]);
+      setSpecialTourCaptainsTask([]);
       setSpecialCaptainsRoomId('');
       setSpecialRoomLayouts({});
       setTeamTableMergesTour3({});
@@ -180,6 +182,7 @@ const CompetitionsAdminPage: React.FC = () => {
     if (!count || count < 1) {
       setSpecialTourModes([]);
       setSpecialTourTasks([]);
+      setSpecialTourCaptainsTask([]);
       return;
     }
     setSpecialTourModes((prev) => {
@@ -188,6 +191,10 @@ const CompetitionsAdminPage: React.FC = () => {
     });
     setSpecialTourTasks((prev) => {
       const next = Array.from({ length: count }, (_, idx) => prev[idx] || '1');
+      return next;
+    });
+    setSpecialTourCaptainsTask((prev) => {
+      const next = Array.from({ length: count }, (_, idx) => prev[idx] || false);
       return next;
     });
   }, [isSpecialCompetition, specialToursCount]);
@@ -293,7 +300,7 @@ const CompetitionsAdminPage: React.FC = () => {
     return normalized.map((group) => group.join('+')).join(', ');
   }
 
-  function extractToursFromSettings(comp: Competition): Array<{ tourNumber: number; mode: string; taskNumbers: number[] }> {
+  function extractToursFromSettings(comp: Competition): Array<{ tourNumber: number; mode: string; taskNumbers: number[]; captainsTask: boolean }> {
     const settings = comp.special_settings;
     if (!settings || typeof settings !== 'object') return [];
 
@@ -313,13 +320,15 @@ const CompetitionsAdminPage: React.FC = () => {
             .filter((n) => Number.isInteger(n) && n > 0)
           : [1];
         const rawTourNumber = (item as { tour_number?: unknown }).tour_number;
+        const captainsTask = Boolean((item as { captains_task?: unknown }).captains_task);
         return {
           tourNumber: parsePositiveInt(rawTourNumber, index + 1),
           mode,
           taskNumbers: taskNumbers.length ? Array.from(new Set(taskNumbers)) : [1],
+          captainsTask,
         };
       })
-      .filter((item): item is { tourNumber: number; mode: string; taskNumbers: number[] } => item !== null);
+      .filter((item): item is { tourNumber: number; mode: string; taskNumbers: number[]; captainsTask: boolean } => item !== null);
   }
 
   function extractRoomLayoutsFromSettings(comp: Competition): RoomLayoutState {
@@ -399,6 +408,7 @@ const CompetitionsAdminPage: React.FC = () => {
     setNewRoomCapacity(30);
     setSpecialTourModes([]);
     setSpecialTourTasks([]);
+    setSpecialTourCaptainsTask([]);
     setSpecialCaptainsRoomId('');
     setSpecialRoomLayouts({});
     setTeamTableMergesTour3({});
@@ -442,6 +452,11 @@ const CompetitionsAdminPage: React.FC = () => {
       Array.from({ length: effectiveTourCount }, (_, index) => {
         const taskNumbers = toursFromSettings[index]?.taskNumbers || [1];
         return taskNumbers.join(', ');
+      })
+    );
+    setSpecialTourCaptainsTask(
+      Array.from({ length: effectiveTourCount }, (_, index) => {
+        return toursFromSettings[index]?.captainsTask || false;
       })
     );
     setSpecialCaptainsRoomId(typeof rawCaptainsRoomId === 'string' ? rawCaptainsRoomId : '');
@@ -547,6 +562,7 @@ const CompetitionsAdminPage: React.FC = () => {
         tour_number: index + 1,
         mode,
         task_numbers: parseTaskNumbersInput(specialTourTasks[index] || '1'),
+        captains_task: specialTourCaptainsTask[index] || false,
       }));
       const normalizedRoomLayouts = Object.fromEntries(
         Object.entries(specialRoomLayouts).map(([roomId, layout]) => [
@@ -608,6 +624,7 @@ const CompetitionsAdminPage: React.FC = () => {
       setExistingRooms([]);
       setSpecialTourModes([]);
       setSpecialTourTasks([]);
+      setSpecialTourCaptainsTask([]);
       setSpecialCaptainsRoomId('');
       setSpecialRoomLayouts({});
       setTeamTableMergesTour3({});
@@ -1328,6 +1345,7 @@ const CompetitionsAdminPage: React.FC = () => {
           setExistingRooms([]);
           setSpecialTourModes([]);
           setSpecialTourTasks([]);
+          setSpecialTourCaptainsTask([]);
           setSpecialCaptainsRoomId('');
           setSpecialRoomLayouts({});
           setTeamTableMergesTour3({});
@@ -1398,7 +1416,7 @@ const CompetitionsAdminPage: React.FC = () => {
                     {specialTourModes.map((mode, index) => (
                       <div
                         key={`tour-mode-${index}`}
-                        style={{ display: 'grid', gridTemplateColumns: '120px 1fr 1fr', gap: 8, alignItems: 'center' }}
+                        style={{ display: 'grid', gridTemplateColumns: '120px 1fr 1fr auto', gap: 8, alignItems: 'center' }}
                       >
                         <span className="text-muted">Тур {toRoman(index + 1)}</span>
                         <select
@@ -1420,6 +1438,16 @@ const CompetitionsAdminPage: React.FC = () => {
                             setSpecialTourTasks((prev) => prev.map((tasks, i) => (i === index ? e.target.value : tasks)))
                           }
                         />
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, whiteSpace: 'nowrap', cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={specialTourCaptainsTask[index] || false}
+                            onChange={(e) =>
+                              setSpecialTourCaptainsTask((prev) => prev.map((v, i) => (i === index ? e.target.checked : v)))
+                            }
+                          />
+                          Задача капитанов
+                        </label>
                       </div>
                     ))}
                   </div>

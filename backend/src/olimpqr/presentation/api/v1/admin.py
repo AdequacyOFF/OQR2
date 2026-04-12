@@ -306,11 +306,13 @@ def _extract_special_tours(competition) -> list[dict[str, Any]]:
                     continue
             if not tasks:
                 tasks = [1]
+            captains_task = bool(item.get("captains_task", False))
             normalized.append(
                 {
                     "tour_number": tour_number,
                     "mode": mode,
                     "task_numbers": sorted(set(tasks)),
+                    "captains_task": captains_task,
                 }
             )
 
@@ -329,6 +331,7 @@ def _extract_special_tours(competition) -> list[dict[str, Any]]:
                 "tour_number": i + 1,
                 "mode": mode,
                 "task_numbers": [1],
+                "captains_task": False,
             }
         )
     return fallback
@@ -3912,6 +3915,38 @@ async def admit_all_special_and_download(
                                 "registration_id": str(reg.id),
                                 "participant": participant.full_name,
                                 "error": f"Task {tour_number}/{task_number}: {exc}",
+                            }
+                        )
+
+                # Captains task: generate extra blank only for captains
+                if tour.get("captains_task") and participant.is_captain:
+                    cap_qr_payload = f"attempt:{attempt.id}:tour:{tour_number}:captains_task"
+                    try:
+                        cap_docx = word_generator.generate_answer_blank(
+                            qr_payload=cap_qr_payload,
+                            tour_number=tour_number,
+                            task_number=0,
+                            mode="Задача капитанов",
+                        )
+                        cap_folder = f"{folder}/tour_{tour_number}/Задача капитанов"
+                        zf.writestr(f"{cap_folder}/задача_капитанов.docx", cap_docx)
+                        added_files += 1
+                        for extra_i in range(1, 6):
+                            cap_extra = word_generator.generate_answer_blank(
+                                qr_payload=cap_qr_payload,
+                                tour_number=tour_number,
+                                task_number=0,
+                                mode="Задача капитанов",
+                                tour_task=f"{tour_number}/cap/{extra_i}",
+                            )
+                            zf.writestr(f"{cap_folder}/дополнительные бланки/extra_{extra_i}.docx", cap_extra)
+                            added_files += 1
+                    except Exception as exc:  # noqa: BLE001
+                        admit_errors.append(
+                            {
+                                "registration_id": str(reg.id),
+                                "participant": participant.full_name,
+                                "error": f"Captains task tour {tour_number}: {exc}",
                             }
                         )
 

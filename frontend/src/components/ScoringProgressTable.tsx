@@ -1,7 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import api from '../api/client';
-import { ScoringProgressItem, ScoringProgressResponse, TourTimeItem } from '../types';
+import { ScoringProgressItem, ScoringProgressResponse, TourConfig, TourTimeItem } from '../types';
 import { toRoman } from '../utils/roman';
+
+type FilterMode = 'all' | 'personal_1' | 'personal_2' | 'personal_12' | 'team';
 
 interface Props {
   competitionId: string;
@@ -73,6 +75,7 @@ const ScoringProgressTable: React.FC<Props> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sortKeys, setSortKeys] = useState<SortKey[]>([]);
+  const [filterMode, setFilterMode] = useState<FilterMode>('all');
   const highlightRef = useRef<HTMLTableRowElement | null>(null);
 
   const fetchProgress = async () => {
@@ -184,10 +187,88 @@ const ScoringProgressTable: React.FC<Props> = ({
   }
 
   // Build tour config lookup
-  const tourConfigMap: Record<number, { mode: string }> = {};
+  const tourConfigMap: Record<number, TourConfig> = {};
   for (const tc of (data.tour_configs ?? [])) {
     tourConfigMap[tc.tour_number] = tc;
   }
+
+  // Determine which tours are captains_task tours
+  const captainsTaskTours = new Set(
+    (data.tour_configs ?? []).filter((tc) => tc.captains_task).map((tc) => tc.tour_number)
+  );
+
+  // Filter visible tour columns based on filter mode
+  const getVisibleTours = (): number[] => {
+    if (filterMode === 'personal_1') return tourColumns.filter((t) => t === 1);
+    if (filterMode === 'personal_2') return tourColumns.filter((t) => t === 2);
+    if (filterMode === 'personal_12') return tourColumns.filter((t) => t === 1 || t === 2);
+    if (filterMode === 'team') return tourColumns.filter((t) => t === 3 || captainsTaskTours.has(t));
+    return tourColumns;
+  };
+  const visibleTours = getVisibleTours();
+
+  // Get tour total excluding captains task score (key "0") when in personal mode
+  const getTourTotalFiltered = (item: ScoringProgressItem, tourNum: number, excludeCaptains: boolean): number | null => {
+    const tour = item.tours.find((t) => t.tour_number === tourNum);
+    if (!tour?.task_scores) return tour?.tour_total ?? null;
+    if (!excludeCaptains || !captainsTaskTours.has(tourNum)) return tour.tour_total ?? null;
+    let sum = 0;
+    let hasAny = false;
+    for (const [k, v] of Object.entries(tour.task_scores)) {
+      if (k === '0') continue;
+      sum += v;
+      hasAny = true;
+    }
+    return hasAny ? sum : null;
+  };
+
+  // Recalculate totals for filtered view
+  const isPersonalMode = filterMode.startsWith('personal');
+  const calcFilteredTotal = (item: ScoringProgressItem): number | null => {
+    if (filterMode === 'all') return item.score_total;
+    let sum = 0;
+    let hasAny = false;
+    for (const t of visibleTours) {
+      const val = getTourTotalFiltered(item, t, isPersonalMode);
+      if (val !== null) { sum += val; hasAny = true; }
+    }
+    return hasAny ? sum : null;
+  };
+
+  // Team standings grouping
+  interface TeamRow {
+    institution: string;
+    members: ScoringProgressItem[];
+    teamTotal: number | null;
+  }
+
+  const buildTeamRows = (): TeamRow[] => {
+    const groups: Record<string, ScoringProgressItem[]> = {};
+    for (const item of data.items) {
+      const key = item.participant_school || '—';
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(item);
+    }
+    const rows: TeamRow[] = Object.entries(groups).map(([inst, members]) => {
+      let teamTotal: number | null = null;
+      for (const m of members) {
+        const t = calcFilteredTotal(m);
+        if (t !== null) {
+          teamTotal = (teamTotal ?? 0) + t;
+        }
+      }
+      return { institution: inst, members, teamTotal };
+    });
+    rows.sort((a, b) => {
+      if (a.teamTotal === null) return 1;
+      if (b.teamTotal === null) return -1;
+      return b.teamTotal - a.teamTotal;
+    });
+    return rows;
+  };
+
+  const isTeamMode = filterMode === 'team';
+  const teamRows = isTeamMode ? buildTeamRows() : [];
 
   const sortedItems = sortItems(data.items, sortKeys);
 
@@ -236,6 +317,30 @@ const ScoringProgressTable: React.FC<Props> = ({
         </div>
       </div>
 
+      {/* Filter dropdown */}
+      {data.is_special && (
+        <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 2 }}>
+          <label style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>Зачет:</label>
+          <select
+            value={filterMode}
+            onChange={(e) => setFilterMode(e.target.value as FilterMode)}
+            style={{
+              padding: '5px 10px',
+              borderRadius: 6,
+              border: '1px solid #d1d5db',
+              fontSize: 13,
+              background: 'white',
+            }}
+          >
+            <option value="all">Все</option>
+            <option value="personal_1">Личный зачет (Тур I)</option>
+            <option value="personal_2">Личный зачет (Тур II)</option>
+            <option value="personal_12">Личный зачет (Тур I + II)</option>
+            <option value="team">Общий зачет по командам</option>
+          </select>
+        </div>
+      )}
+
       {sortKeys.length > 0 && (
         <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 6, paddingLeft: 2 }}>
           Сортировка: {sortKeys.map((k, i) => {
@@ -280,19 +385,31 @@ const ScoringProgressTable: React.FC<Props> = ({
       >
         <thead>
           <tr style={{ background: '#f3f4f6', borderBottom: '2px solid #e5e7eb' }}>
-            {makeTh('name', 'Участник')}
-            {makeTh('school', 'Школа')}
-            {makeTh('variant', 'Вар.', { textAlign: 'center' })}
-            {data.is_special && tourColumns.map((t) => {
+            {isTeamMode ? (
+              <th style={{ ...thStyle }}>ВУЗ</th>
+            ) : (
+              <>
+                {makeTh('name', 'Участник')}
+                {makeTh('school', 'Школа')}
+              </>
+            )}
+            {!isTeamMode && makeTh('variant', 'Вар.', { textAlign: 'center' })}
+            {data.is_special && visibleTours.map((t) => {
               const tt = tourTimeMap[t];
               const cfg = tourConfigMap[t];
               const modeLabel = cfg ? MODE_LABELS[cfg.mode] : null;
+              const isCaptainsTour = cfg?.captains_task;
               return makeTh(`tour_${t}`, (
                 <div>
                   <div>Тур {toRoman(t)}</div>
                   {modeLabel && (
                     <div style={{ fontSize: 10, fontWeight: 400, color: '#6b7280' }}>
                       {modeLabel}
+                    </div>
+                  )}
+                  {isCaptainsTour && (
+                    <div style={{ fontSize: 9, fontWeight: 600, color: '#b45309' }}>
+                      + Задача капитанов
                     </div>
                   )}
                   {tt?.duration_minutes != null && (
@@ -303,112 +420,204 @@ const ScoringProgressTable: React.FC<Props> = ({
                 </div>
               ), { textAlign: 'center' });
             })}
-            {makeTh('total', 'Итог', { textAlign: 'center' })}
-            <th style={{ ...thStyle, textAlign: 'center' }}>Статус</th>
+            {makeTh('total', isTeamMode ? 'Сумма' : 'Итог', { textAlign: 'center' })}
+            <th style={{ ...thStyle, textAlign: 'center' }}>{isTeamMode ? '' : 'Статус'}</th>
           </tr>
         </thead>
         <tbody>
-          {sortedItems.map((item) => {
-            const isHighlighted = item.attempt_id === highlightAttemptId;
-            const isScored = item.score_total !== null;
-            return (
-              <tr
-                key={item.registration_id}
-                ref={isHighlighted ? highlightRef : null}
-                style={{
-                  background: isHighlighted
-                    ? '#fef9c3'
-                    : isScored
-                    ? '#f0fdf4'
-                    : 'white',
-                  borderBottom: '1px solid #e5e7eb',
-                  transition: 'background 0.3s',
-                }}
-              >
-                <td style={tdStyle}>{item.participant_name}</td>
-                <td style={{ ...tdStyle, color: '#555', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {item.participant_school}
-                </td>
-                <td style={{ ...tdStyle, textAlign: 'center', color: '#6b7280' }}>
-                  {item.variant_number ?? '—'}
-                </td>
-                {data.is_special && tourColumns.map((tourNum) => {
-                  const tour = item.tours.find((t) => t.tour_number === tourNum);
-                  const taskEntries = tour?.task_scores
-                    ? Object.entries(tour.task_scores).sort(([a], [b]) => Number(a) - Number(b))
-                    : null;
-                  return (
+          {isTeamMode ? (
+            <>
+              {teamRows.map((team, teamIdx) => (
+                <React.Fragment key={team.institution}>
+                  {/* Team header row */}
+                  <tr style={{ background: '#e0e7ff', borderBottom: '2px solid #c7d2fe' }}>
+                    <td style={{ ...tdStyle, fontWeight: 700, fontSize: 14 }}>
+                      {teamIdx + 1}. {team.institution}
+                    </td>
+                    {data.is_special && visibleTours.map((tourNum) => {
+                      let tourSum: number | null = null;
+                      for (const m of team.members) {
+                        const val = getTourTotal(m, tourNum);
+                        if (val !== null) tourSum = (tourSum ?? 0) + val;
+                      }
+                      return (
+                        <td key={tourNum} style={{ ...tdStyle, textAlign: 'center', fontWeight: 700, color: '#4338ca' }}>
+                          {tourSum !== null ? tourSum : '—'}
+                        </td>
+                      );
+                    })}
+                    <td style={{ ...tdStyle, textAlign: 'center', fontWeight: 700, fontSize: 15, color: '#4338ca' }}>
+                      {team.teamTotal !== null ? team.teamTotal : '—'}
+                    </td>
+                    <td style={{ ...tdStyle, textAlign: 'center', fontSize: 12, color: '#6b7280' }}>
+                      {team.members.length} уч.
+                    </td>
+                  </tr>
+                  {/* Individual members */}
+                  {team.members.map((item) => {
+                    const filteredTotal = calcFilteredTotal(item);
+                    return (
+                      <tr
+                        key={item.registration_id}
+                        style={{ background: 'white', borderBottom: '1px solid #e5e7eb' }}
+                      >
+                        <td style={{ ...tdStyle, paddingLeft: 28, color: '#555', fontSize: 12 }}>
+                          {item.participant_name}
+                          {item.is_captain && (
+                            <span style={{ marginLeft: 6, fontSize: 10, color: '#b45309', fontWeight: 600 }}>К</span>
+                          )}
+                        </td>
+                        {data.is_special && visibleTours.map((tourNum) => {
+                          const tour = item.tours.find((t) => t.tour_number === tourNum);
+                          const taskEntries = tour?.task_scores
+                            ? Object.entries(tour.task_scores).sort(([a], [b]) => Number(a) - Number(b))
+                            : null;
+                          return (
+                            <td
+                              key={tourNum}
+                              style={{
+                                ...tdStyle,
+                                textAlign: 'center',
+                                fontWeight: tour?.tour_total != null ? 600 : 400,
+                                color: tour?.tour_total != null ? '#15803d' : '#9ca3af',
+                                fontSize: 12,
+                              }}
+                            >
+                              <div>{tour?.tour_total != null ? tour.tour_total : '—'}</div>
+                              {taskEntries && taskEntries.length > 0 && (
+                                <div style={{ fontSize: 9, fontWeight: 400, color: '#9ca3af', marginTop: 1 }}>
+                                  {taskEntries.map(([k, v]) => `${k}:${v}`).join(' ')}
+                                </div>
+                              )}
+                            </td>
+                          );
+                        })}
+                        <td style={{ ...tdStyle, textAlign: 'center', fontWeight: 600, color: filteredTotal !== null ? '#15803d' : '#9ca3af', fontSize: 12 }}>
+                          {filteredTotal !== null ? filteredTotal : '—'}
+                        </td>
+                        <td />
+                      </tr>
+                    );
+                  })}
+                </React.Fragment>
+              ))}
+              {teamRows.length === 0 && (
+                <tr>
+                  <td colSpan={3 + visibleTours.length} style={{ textAlign: 'center', padding: 24, color: '#9ca3af' }}>
+                    Нет данных
+                  </td>
+                </tr>
+              )}
+            </>
+          ) : (
+            <>
+              {sortedItems.map((item) => {
+                const isHighlighted = item.attempt_id === highlightAttemptId;
+                const filteredTotal = calcFilteredTotal(item);
+                const isScored = filteredTotal !== null;
+                return (
+                  <tr
+                    key={item.registration_id}
+                    ref={isHighlighted ? highlightRef : null}
+                    style={{
+                      background: isHighlighted
+                        ? '#fef9c3'
+                        : isScored
+                        ? '#f0fdf4'
+                        : 'white',
+                      borderBottom: '1px solid #e5e7eb',
+                      transition: 'background 0.3s',
+                    }}
+                  >
+                    <td style={tdStyle}>{item.participant_name}</td>
+                    <td style={{ ...tdStyle, color: '#555', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {item.participant_school}
+                    </td>
+                    <td style={{ ...tdStyle, textAlign: 'center', color: '#6b7280' }}>
+                      {item.variant_number ?? '—'}
+                    </td>
+                    {data.is_special && visibleTours.map((tourNum) => {
+                      const tour = item.tours.find((t) => t.tour_number === tourNum);
+                      const displayTotal = getTourTotalFiltered(item, tourNum, isPersonalMode);
+                      const taskEntries = tour?.task_scores
+                        ? Object.entries(tour.task_scores)
+                            .filter(([k]) => !(isPersonalMode && captainsTaskTours.has(tourNum) && k === '0'))
+                            .sort(([a], [b]) => Number(a) - Number(b))
+                        : null;
+                      return (
+                        <td
+                          key={tourNum}
+                          style={{
+                            ...tdStyle,
+                            textAlign: 'center',
+                            fontWeight: displayTotal != null ? 600 : 400,
+                            color: displayTotal != null ? '#15803d' : '#9ca3af',
+                          }}
+                        >
+                          <div>{displayTotal != null ? displayTotal : '—'}</div>
+                          {taskEntries && taskEntries.length > 0 && (
+                            <div style={{ fontSize: 10, fontWeight: 400, color: '#9ca3af', marginTop: 2 }}>
+                              {taskEntries.map(([k, v]) => `${k}:${v}`).join(' ')}
+                            </div>
+                          )}
+                        </td>
+                      );
+                    })}
                     <td
-                      key={tourNum}
                       style={{
                         ...tdStyle,
                         textAlign: 'center',
-                        fontWeight: tour?.tour_total != null ? 600 : 400,
-                        color: tour?.tour_total != null ? '#15803d' : '#9ca3af',
+                        fontWeight: 700,
+                        color: isScored ? '#15803d' : '#9ca3af',
                       }}
                     >
-                      <div>{tour?.tour_total != null ? tour.tour_total : '—'}</div>
-                      {taskEntries && taskEntries.length > 0 && (
-                        <div style={{ fontSize: 10, fontWeight: 400, color: '#9ca3af', marginTop: 2 }}>
-                          {taskEntries.map(([k, v]) => `${k}:${v}`).join(' ')}
-                        </div>
+                      {isScored ? filteredTotal : '—'}
+                    </td>
+                    <td style={{ ...tdStyle, textAlign: 'center' }}>
+                      {isScored ? (
+                        <span
+                          title="Баллы внесены"
+                          style={{
+                            display: 'inline-block',
+                            width: 20,
+                            height: 20,
+                            borderRadius: '50%',
+                            background: '#22c55e',
+                            color: 'white',
+                            lineHeight: '20px',
+                            fontSize: 12,
+                            fontWeight: 700,
+                          }}
+                        >
+                          ✓
+                        </span>
+                      ) : (
+                        <span
+                          title="Баллы не внесены"
+                          style={{
+                            display: 'inline-block',
+                            width: 20,
+                            height: 20,
+                            borderRadius: '50%',
+                            background: '#e5e7eb',
+                          }}
+                        />
                       )}
                     </td>
-                  );
-                })}
-                <td
-                  style={{
-                    ...tdStyle,
-                    textAlign: 'center',
-                    fontWeight: 700,
-                    color: isScored ? '#15803d' : '#9ca3af',
-                  }}
-                >
-                  {isScored ? item.score_total : '—'}
-                </td>
-                <td style={{ ...tdStyle, textAlign: 'center' }}>
-                  {isScored ? (
-                    <span
-                      title="Баллы внесены"
-                      style={{
-                        display: 'inline-block',
-                        width: 20,
-                        height: 20,
-                        borderRadius: '50%',
-                        background: '#22c55e',
-                        color: 'white',
-                        lineHeight: '20px',
-                        fontSize: 12,
-                        fontWeight: 700,
-                      }}
-                    >
-                      ✓
-                    </span>
-                  ) : (
-                    <span
-                      title="Баллы не внесены"
-                      style={{
-                        display: 'inline-block',
-                        width: 20,
-                        height: 20,
-                        borderRadius: '50%',
-                        background: '#e5e7eb',
-                      }}
-                    />
-                  )}
-                </td>
-              </tr>
-            );
-          })}
-          {data.items.length === 0 && (
-            <tr>
-              <td
-                colSpan={4 + tourColumns.length}
-                style={{ textAlign: 'center', padding: 24, color: '#9ca3af' }}
-              >
-                Нет участников
-              </td>
-            </tr>
+                  </tr>
+                );
+              })}
+              {data.items.length === 0 && (
+                <tr>
+                  <td
+                    colSpan={4 + visibleTours.length}
+                    style={{ textAlign: 'center', padding: 24, color: '#9ca3af' }}
+                  >
+                    Нет участников
+                  </td>
+                </tr>
+              )}
+            </>
           )}
         </tbody>
       </table>

@@ -149,6 +149,7 @@ class TourConfigItem(BaseModel):
     tour_number: int
     mode: str  # "individual" | "individual_captains" | "team"
     task_numbers: list[int] = []
+    captains_task: bool = False
 
 
 class ScoringProgressItem(BaseModel):

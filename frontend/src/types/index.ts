@@ -200,6 +200,7 @@ export interface TourConfig {
   tour_number: number;
   mode: string; // "individual" | "individual_captains" | "team"
   task_numbers: number[];
+  captains_task: boolean;
 }
 
 export interface ScoringProgressResponse {
