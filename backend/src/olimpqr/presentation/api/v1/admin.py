@@ -2000,10 +2000,7 @@ async def export_scoring_progress_excel(
                     else:
                         row_data.append(None)
                 row_data.append(tour.tour_total if tour else None)
-                tt = tour_time_map.get(tc.tour_number)
-                row_data.append(
-                    f"{tt.duration_minutes} мин" if tt and tt.duration_minutes is not None else ""
-                )
+                row_data.append(tour.tour_time if tour and tour.tour_time else "")
             row_data.append(item.score_total)
             ws.append(row_data)
 
@@ -2090,7 +2087,7 @@ async def import_results_table(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Не удалось открыть XLSX: {exc}")
 
-    ws = wb.active
+    ws = wb.worksheets[0] if wb.worksheets else None
     if not ws:
         raise HTTPException(status_code=400, detail="В файле нет листов")
 
@@ -2102,26 +2099,48 @@ async def import_results_table(
     tour_configs = _build_tour_configs(competition_obj)
     individual_tours = [tc for tc in tour_configs if tc.mode in ("individual", "individual_captains")]
 
-    # Reconstruct column layout (same as export_results_table)
-    DATA_ROW = 5
-    ci = 2
-    ci += 1  # num_col (B)
-    inst_col = ci; ci += 1  # C: institution
-    name_col = ci; ci += 1  # D: ФИО
+    # Auto-detect format: scoring-progress export has "ВУЗ" in row 4, column 1
+    header_a1 = str(ws.cell(row=4, column=1).value or "").strip()
+    is_scoring_progress_format = (header_a1 == "ВУЗ")
 
     tour_col_map: dict[int, dict] = {}
-    for tc in individual_tours:
-        n_tasks = len(tc.task_numbers) if tc.task_numbers else 1
-        task_cols = list(range(ci, ci + n_tasks)); ci += n_tasks
-        total_col = ci; ci += 1
-        time_col = ci; ci += 1
-        rank_col = ci; ci += 1
-        tour_col_map[tc.tour_number] = {
-            "task_cols": task_cols,
-            "n_tasks": n_tasks,
-            "task_numbers": tc.task_numbers,
-            "time_col": time_col,
-        }
+
+    if is_scoring_progress_format:
+        # Scoring-progress format: A=ВУЗ, B=ФИО, C=Капитан, D=Вариант, then per-tour blocks
+        DATA_ROW = 5
+        name_col = 2  # column B = ФИО
+        ci = 5  # first tour data column (after A, B, C, D)
+        for tc in tour_configs:
+            n_tasks = len(tc.task_numbers) if tc.task_numbers else 1
+            task_cols = list(range(ci, ci + n_tasks))
+            total_col_skip = ci + n_tasks
+            time_col = ci + n_tasks + 1
+            ci += n_tasks + 2  # tasks + total + time
+            tour_col_map[tc.tour_number] = {
+                "task_cols": task_cols,
+                "n_tasks": n_tasks,
+                "task_numbers": tc.task_numbers,
+                "time_col": time_col,
+            }
+    else:
+        # Results-table format: B=№, C=ВУЗ, D=ФИО, then per-tour blocks
+        DATA_ROW = 5
+        ci = 2
+        ci += 1  # num_col (B)
+        inst_col = ci; ci += 1  # C: institution
+        name_col = ci; ci += 1  # D: ФИО
+        for tc in individual_tours:
+            n_tasks = len(tc.task_numbers) if tc.task_numbers else 1
+            task_cols = list(range(ci, ci + n_tasks)); ci += n_tasks
+            total_col = ci; ci += 1
+            time_col = ci; ci += 1
+            rank_col = ci; ci += 1
+            tour_col_map[tc.tour_number] = {
+                "task_cols": task_cols,
+                "n_tasks": n_tasks,
+                "task_numbers": tc.task_numbers,
+                "time_col": time_col,
+            }
 
     # Load all participants with attempts
     use_case = GetScoringProgressUseCase(
@@ -2168,7 +2187,8 @@ async def import_results_table(
             continue
 
         changed = False
-        for tc in individual_tours:
+        tours_to_import = tour_configs if is_scoring_progress_format else individual_tours
+        for tc in tours_to_import:
             tcm = tour_col_map.get(tc.tour_number)
             if not tcm:
                 continue
@@ -2194,6 +2214,12 @@ async def import_results_table(
                     tour_time_str = f"{h:02d}.{m:02d}.{s:02d}"
                 elif isinstance(time_val, str) and re.match(r"^\d{2}\.\d{2}\.\d{2}$", time_val):
                     tour_time_str = time_val
+                elif isinstance(time_val, float) and 0.0 <= time_val < 1.0:
+                    total_secs = int(round(time_val * 86400))
+                    h = total_secs // 3600
+                    m = (total_secs % 3600) // 60
+                    s = total_secs % 60
+                    tour_time_str = f"{h:02d}.{m:02d}.{s:02d}"
 
             if scores:
                 attempt.apply_task_scores(
@@ -2288,6 +2314,14 @@ async def export_results_table(
         cell.value = value
         cell.alignment = center
         cell.border = border
+
+    def _dt(cell, value):
+        """Write a time data cell (timedelta) with [h]:mm:ss format."""
+        cell.value = value
+        cell.alignment = center
+        cell.border = border
+        if value is not None:
+            cell.number_format = '[h]:mm:ss'
 
     # ── Helper: tour rank COUNTIFS formula ─────────────────────────────────
     def _tour_rank_formula(total_cl: str, time_cl: str, data_row: int, row: int) -> str:
@@ -2502,7 +2536,7 @@ async def export_results_table(
                 if tt and tt.duration_minutes is not None:
                     from datetime import timedelta
                     time_val = timedelta(minutes=tt.duration_minutes)
-            _d(ws1.cell(row=row, column=tcm["time_col"]), time_val)
+            _dt(ws1.cell(row=row, column=tcm["time_col"]), time_val)
 
             # Tour rank (formula)
             total_cl = get_column_letter(tcm["total_col"])
@@ -2523,6 +2557,7 @@ async def export_results_table(
                 for tc in individual_tours
             )
             _c(ws1.cell(row=row, column=time_sum_col), f"={time_cols_str}")
+            ws1.cell(row=row, column=time_sum_col).number_format = '[h]:mm:ss'
 
             score_cols_str = "+".join(
                 f"{get_column_letter(tour_col_map[tc.tour_number]['total_col'])}{row}"
@@ -2717,6 +2752,7 @@ async def export_results_table(
                     _c(ws2.cell(row=row, column=tm["total_col"]), sumif_total)
 
                 _c(ws2.cell(row=row, column=tm["time_col"]), sumif_time)
+                ws2.cell(row=row, column=tm["time_col"]).number_format = '[h]:mm:ss'
 
                 # Rank for this tour
                 total2_cl = get_column_letter(tm["total_col"])
@@ -2738,7 +2774,7 @@ async def export_results_table(
                 if tt and tt.duration_minutes is not None:
                     from datetime import timedelta
                     time_val = timedelta(minutes=tt.duration_minutes)
-                _d(ws2.cell(row=row, column=tm["time_col"]), time_val)
+                _dt(ws2.cell(row=row, column=tm["time_col"]), time_val)
 
                 total2_cl = get_column_letter(tm["total_col"])
                 time2_cl = get_column_letter(tm["time_col"])
@@ -2755,6 +2791,7 @@ async def export_results_table(
 
                 time_sum_str = "+".join(f"{cl}{row}" for cl in all_time_cols)
                 _c(ws2.cell(row=row, column=time2_sum_col), f"={time_sum_str}")
+                ws2.cell(row=row, column=time2_sum_col).number_format = '[h]:mm:ss'
 
                 rs2_cl = get_column_letter(rank2_sum_col)
                 st2_cl = get_column_letter(time2_sum_col)

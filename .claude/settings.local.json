@@ -74,7 +74,8 @@
       "Bash(PYTHONPATH=src python -c \"from olimpqr.shared.roman import arabic_to_roman; print\\([\\(n, arabic_to_roman\\(n\\)\\) for n in [1,2,3,4,5,9,10,13,39]]\\)\")",
       "Bash(ls node_modules/.bin/tsc*)",
       "Bash(ls node_modules/typescript/bin/)",
-      "Bash(npm ls:*)"
+      "Bash(npm ls:*)",
+      "Bash(cmd.exe /c \"node_modules\\\\.bin\\\\tsc --noEmit 2>&1\")"
     ],
     "deny": [],
     "ask": []

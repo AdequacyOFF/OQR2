@@ -1,7 +1,7 @@
 """Scan-related Pydantic schemas."""
 
 import datetime as dt
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from uuid import UUID
 from datetime import datetime
 from typing import Optional
@@ -110,4 +110,20 @@ class QRScoreEntryRequest(BaseModel):
     attempt_id: UUID
     tour_number: int = Field(..., ge=1)
     task_scores: list[TaskScoreItem] = Field(..., min_length=1)
-    tour_time: str | None = Field(None, pattern=r"^\d{2}\.\d{2}\.\d{2}$", description="Per-participant tour time in hh.mm.ss format")
+    tour_time: str | None = Field(None, description="Per-participant tour time in h.m.s or hh.mm.ss format")
+
+    @field_validator("tour_time", mode="before")
+    @classmethod
+    def normalize_tour_time(cls, v: object) -> str | None:
+        if v is None:
+            return None
+        s = str(v).strip()
+        if not s:
+            return None
+        parts = s.split(".")
+        if len(parts) != 3 or not all(p.isdigit() for p in parts):
+            raise ValueError("tour_time must be in h.m.s or hh.mm.ss format")
+        h, m, sec = (int(p) for p in parts)
+        if not (0 <= h <= 99 and 0 <= m <= 59 and 0 <= sec <= 59):
+            raise ValueError("tour_time has invalid time values")
+        return f"{h:02d}.{m:02d}.{sec:02d}"

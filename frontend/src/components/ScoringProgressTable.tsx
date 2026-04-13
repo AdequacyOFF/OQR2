@@ -443,11 +443,6 @@ const ScoringProgressTable: React.FC<Props> = ({
                       + Задача капитанов
                     </div>
                   )}
-                  {tt?.duration_minutes != null && (
-                    <div style={{ fontSize: 10, fontWeight: 400, color: '#6b7280' }}>
-                      {tt.duration_minutes} мин
-                    </div>
-                  )}
                 </div>
               ), { textAlign: 'center' });
             })}
