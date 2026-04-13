@@ -4173,14 +4173,14 @@ async def admit_all_special_and_download(
                                 )
                                 zf.writestr(f"{cap_folder}/дополнительные бланки/extra_{cap_task_num}_{extra_i}.docx", cap_extra)
                             added_files += 1
-                    except Exception as exc:  # noqa: BLE001
-                        admit_errors.append(
-                            {
-                                "registration_id": str(reg.id),
-                                "participant": participant.full_name,
-                                "error": f"Captains task tour {tour_number}: {exc}",
-                            }
-                        )
+                        except Exception as exc:  # noqa: BLE001
+                            admit_errors.append(
+                                {
+                                    "registration_id": str(reg.id),
+                                    "participant": participant.full_name,
+                                    "error": f"Captains task tour {tour_number}: {exc}",
+                                }
+                            )
 
             # Keep existing generated PDFs for backward compatibility with scan flow.
             if not sheets and attempt.pdf_file_path:
