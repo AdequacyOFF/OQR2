@@ -40,6 +40,30 @@ function compareValues(a: unknown, b: unknown): number {
   return 0;
 }
 
+function parseTourTimeToSeconds(timeStr: string | null | undefined): number | null {
+  if (!timeStr) return null;
+  const parts = timeStr.split('.');
+  if (parts.length !== 3) return null;
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  const s = parseInt(parts[2], 10);
+  if (isNaN(h) || isNaN(m) || isNaN(s)) return null;
+  return h * 3600 + m * 60 + s;
+}
+
+function getTotalTimeSeconds(item: ScoringProgressItem): number | null {
+  let total = 0;
+  let hasAny = false;
+  for (const tour of item.tours) {
+    const secs = parseTourTimeToSeconds(tour.tour_time);
+    if (secs !== null) {
+      total += secs;
+      hasAny = true;
+    }
+  }
+  return hasAny ? total : null;
+}
+
 function getColValue(item: ScoringProgressItem, col: string): unknown {
   if (col === 'name') return item.participant_name;
   if (col === 'school') return item.participant_school;
@@ -60,6 +84,13 @@ function sortItems(items: ScoringProgressItem[], sortKeys: SortKey[]): ScoringPr
       const vb = getColValue(b, key.col);
       const cmp = compareValues(va, vb);
       if (cmp !== 0) return key.dir === 'asc' ? cmp : -cmp;
+      // Time tiebreaker: when scores are equal, prefer less time (ascending)
+      if (key.col === 'total' || key.col.startsWith('tour_')) {
+        const ta = getTotalTimeSeconds(a);
+        const tb = getTotalTimeSeconds(b);
+        const timeCmp = compareValues(ta, tb);
+        if (timeCmp !== 0) return timeCmp; // ascending: less time = higher rank
+      }
     }
     return 0;
   });
@@ -558,6 +589,11 @@ const ScoringProgressTable: React.FC<Props> = ({
                           {taskEntries && taskEntries.length > 0 && (
                             <div style={{ fontSize: 10, fontWeight: 400, color: '#9ca3af', marginTop: 2 }}>
                               {taskEntries.map(([k, v]) => `${k}:${v}`).join(' ')}
+                            </div>
+                          )}
+                          {tour?.tour_time && (
+                            <div style={{ fontSize: 9, fontWeight: 400, color: '#6b7280', marginTop: 1 }}>
+                              {tour.tour_time}
                             </div>
                           )}
                         </td>

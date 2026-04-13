@@ -110,3 +110,4 @@ class QRScoreEntryRequest(BaseModel):
     attempt_id: UUID
     tour_number: int = Field(..., ge=1)
     task_scores: list[TaskScoreItem] = Field(..., min_length=1)
+    tour_time: str | None = Field(None, pattern=r"^\d{2}\.\d{2}\.\d{2}$", description="Per-participant tour time in hh.mm.ss format")

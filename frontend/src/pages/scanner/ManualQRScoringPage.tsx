@@ -47,6 +47,7 @@ const ManualQRScoringPage: React.FC = () => {
 
   const [resolved, setResolved] = useState<ResolveQRResponse | null>(null);
   const [taskScores, setTaskScores] = useState<Record<number, string>>({});
+  const [tourTime, setTourTime] = useState('');
   const [resultAttempt, setResultAttempt] = useState<AttemptResponse | null>(null);
 
   // Progress table state
@@ -73,6 +74,7 @@ const ManualQRScoringPage: React.FC = () => {
       const initial: Record<number, string> = {};
       for (const t of data.task_numbers) initial[t] = '';
       setTaskScores(initial);
+      setTourTime('');
       setStep('entry');
     } catch (e: any) {
       setError(e?.response?.data?.detail ?? 'QR-код не распознан');
@@ -99,11 +101,15 @@ const ManualQRScoringPage: React.FC = () => {
     }));
 
     try {
-      const { data } = await api.post<AttemptResponse>('scans/qr-score-entry', {
+      const payload: Record<string, unknown> = {
         attempt_id: resolved.attempt_id,
         tour_number: resolved.tour_number ?? 1,
         task_scores: taskScoreList,
-      });
+      };
+      if (tourTime.trim()) {
+        payload.tour_time = tourTime.trim();
+      }
+      const { data } = await api.post<AttemptResponse>('scans/qr-score-entry', payload);
       setResultAttempt(data);
       setLastAttemptId(data.id);
       setRefreshTrigger((n) => n + 1);
@@ -119,6 +125,7 @@ const ManualQRScoringPage: React.FC = () => {
     setStep('scan');
     setResolved(null);
     setTaskScores({});
+    setTourTime('');
     setResultAttempt(null);
     setError(null);
     setLaserInput('');
@@ -290,6 +297,24 @@ const ManualQRScoringPage: React.FC = () => {
                         />
                       </div>
                     ))}
+                  </div>
+                  <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <label style={{ minWidth: 80, fontSize: 14 }}>
+                      Время:
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="чч.мм.сс"
+                      value={tourTime}
+                      onChange={(e) => setTourTime(e.target.value)}
+                      style={{
+                        flex: 1,
+                        padding: '8px 12px',
+                        borderRadius: 6,
+                        border: '1px solid #d1d5db',
+                        fontSize: 15,
+                      }}
+                    />
                   </div>
                   <div
                     style={{

@@ -26,6 +26,8 @@ const ScannerResultsPage: React.FC = () => {
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [exportLoading, setExportLoading] = useState(false);
   const [resultsTableLoading, setResultsTableLoading] = useState(false);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importResult, setImportResult] = useState<{ updated: number; skipped: string[] } | null>(null);
 
   // Tour time form state: tourNumber → { started_at, finished_at }
   const [tourTimes, setTourTimes] = useState<Record<number, TourTimeFormEntry>>({});
@@ -121,6 +123,38 @@ const ScannerResultsPage: React.FC = () => {
     } finally {
       setResultsTableLoading(false);
     }
+  };
+
+  const handleImportResultsTable = async () => {
+    if (!selectedId) return;
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.xlsx';
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+      setImportLoading(true);
+      setImportResult(null);
+      try {
+        const form = new FormData();
+        form.append('file', file);
+        const { data } = await api.post(
+          `admin/competitions/${selectedId}/results-table/import`,
+          form,
+          { headers: { 'Content-Type': 'multipart/form-data' } }
+        );
+        setImportResult({ updated: data.updated, skipped: data.skipped });
+        setRefreshTrigger((n) => n + 1);
+      } catch (err: unknown) {
+        const msg =
+          (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+          'Ошибка импорта.';
+        alert(msg);
+      } finally {
+        setImportLoading(false);
+      }
+    };
+    input.click();
   };
 
   const handleSaveTimes = async () => {
@@ -282,7 +316,15 @@ const ScannerResultsPage: React.FC = () => {
 
             {/* Results table */}
             <div className="card" style={{ padding: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginBottom: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                <Button
+                  onClick={handleImportResultsTable}
+                  loading={importLoading}
+                  disabled={importLoading}
+                  variant="secondary"
+                >
+                  Импорт таблицы (.xlsx)
+                </Button>
                 <Button
                   onClick={handleExportResultsTable}
                   loading={resultsTableLoading}
@@ -298,6 +340,16 @@ const ScannerResultsPage: React.FC = () => {
                   Экспорт в Excel
                 </Button>
               </div>
+              {importResult && (
+                <div style={{ marginBottom: 12, padding: '8px 12px', background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 6, fontSize: 13 }}>
+                  Импортировано: {importResult.updated} участник(ов).
+                  {importResult.skipped.length > 0 && (
+                    <span style={{ color: '#b45309' }}>
+                      {' '}Не найдено: {importResult.skipped.join(', ')}
+                    </span>
+                  )}
+                </div>
+              )}
               <ScoringProgressTable
                 competitionId={selectedId}
                 refreshTrigger={refreshTrigger}

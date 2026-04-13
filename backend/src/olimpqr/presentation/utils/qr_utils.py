@@ -21,6 +21,18 @@ A3_COVER_PATTERN = re.compile(
     r"[:/]tour[:/](?P<tour_number>\d+)[:/]cover",
     re.IGNORECASE,
 )
+# Matches answer-blank QR: attempt:<UUID>:tour:<N>:task:<M>
+ANSWER_BLANK_PATTERN = re.compile(
+    r"attempt[:/](?P<attempt_id>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+    r"[:/]tour[:/](?P<tour_number>\d+)[:/]task[:/]\d+",
+    re.IGNORECASE,
+)
+# Matches captains-task QR: attempt:<UUID>:tour:<N>:captains_task[:<M>]
+CAPTAINS_TASK_PATTERN = re.compile(
+    r"attempt[:/](?P<attempt_id>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+    r"[:/]tour[:/](?P<tour_number>\d+)[:/]captains_task(?:[:/]\d+)?",
+    re.IGNORECASE,
+)
 
 
 def normalize_sheet_token(raw_token: str) -> str:
@@ -63,11 +75,16 @@ def extract_attempt_id(token: str) -> UUID | None:
 
 
 def extract_a3_cover_info(token: str) -> tuple[UUID, int] | None:
-    """Extract (attempt_id, tour_number) from an A3-cover QR payload.
+    """Extract (attempt_id, tour_number) from an A3-cover or answer-blank QR payload.
 
-    Returns None if the token is not in A3-cover format.
+    Supports both ``attempt:<UUID>:tour:<N>:cover`` and ``attempt:<UUID>:tour:<N>:task:<M>`` formats.
+    Returns None if the token matches neither format.
     """
     match = A3_COVER_PATTERN.search(token)
+    if not match:
+        match = ANSWER_BLANK_PATTERN.search(token)
+    if not match:
+        match = CAPTAINS_TASK_PATTERN.search(token)
     if not match:
         return None
     try:

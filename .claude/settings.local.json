@@ -71,7 +71,10 @@
       "Bash(echo \"exit: $?\")",
       "Bash(D:/Projects/Kafedra/OQR2/frontend/node_modules/.bin/tsc.cmd --noEmit --project D:/Projects/Kafedra/OQR2/frontend/tsconfig.json)",
       "Bash(/d/Projects/Kafedra/OQR2/.venv/Scripts/pytest.exe --no-cov -x -q)",
-      "Bash(PYTHONPATH=src python -c \"from olimpqr.shared.roman import arabic_to_roman; print\\([\\(n, arabic_to_roman\\(n\\)\\) for n in [1,2,3,4,5,9,10,13,39]]\\)\")"
+      "Bash(PYTHONPATH=src python -c \"from olimpqr.shared.roman import arabic_to_roman; print\\([\\(n, arabic_to_roman\\(n\\)\\) for n in [1,2,3,4,5,9,10,13,39]]\\)\")",
+      "Bash(ls node_modules/.bin/tsc*)",
+      "Bash(ls node_modules/typescript/bin/)",
+      "Bash(npm ls:*)"
     ],
     "deny": [],
     "ask": []

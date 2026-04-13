@@ -18,6 +18,7 @@ class TourProgressResult:
     tour_number: int
     task_scores: dict[str, int] | None
     tour_total: int | None
+    tour_time: str | None = None
 
 
 @dataclass
@@ -94,15 +95,18 @@ class GetScoringProgressUseCase:
                 for tour_num in range(1, tours_count + 1):
                     task_scores: dict[str, int] | None = None
                     tour_total: int | None = None
+                    tour_time: str | None = None
                     if attempt and attempt.task_scores:
                         raw = attempt.task_scores.get(str(tour_num))
                         if raw:
-                            task_scores = {str(k): int(v) for k, v in raw.items()}
+                            tour_time = raw.get("time") if isinstance(raw.get("time"), str) else None
+                            task_scores = {str(k): int(v) for k, v in raw.items() if k != "time" and isinstance(v, int)}
                             tour_total = sum(task_scores.values())
                     tour_progress.append(TourProgressResult(
                         tour_number=tour_num,
                         task_scores=task_scores,
                         tour_total=tour_total,
+                        tour_time=tour_time,
                     ))
 
             items.append(ScoringProgressItemResult(

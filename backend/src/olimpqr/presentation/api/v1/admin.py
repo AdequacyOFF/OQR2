@@ -307,12 +307,22 @@ def _extract_special_tours(competition) -> list[dict[str, Any]]:
             if not tasks:
                 tasks = [1]
             captains_task = bool(item.get("captains_task", False))
+            raw_captains_task_numbers = item.get("captains_task_numbers") or []
+            captains_task_numbers: list[int] = []
+            for ct in raw_captains_task_numbers:
+                try:
+                    val = int(ct)
+                    if val > 0:
+                        captains_task_numbers.append(val)
+                except Exception:  # noqa: BLE001
+                    continue
             normalized.append(
                 {
                     "tour_number": tour_number,
                     "mode": mode,
                     "task_numbers": sorted(set(tasks)),
                     "captains_task": captains_task,
+                    "captains_task_numbers": sorted(set(captains_task_numbers)) if captains_task_numbers else [1],
                 }
             )
 
@@ -332,6 +342,7 @@ def _extract_special_tours(competition) -> list[dict[str, Any]]:
                 "mode": mode,
                 "task_numbers": [1],
                 "captains_task": False,
+                "captains_task_numbers": [],
             }
         )
     return fallback
@@ -1590,6 +1601,34 @@ async def admit_and_download_single(
                     except Exception as exc:
                         gen_errors.append(f"Задание {tour_number}/{task_number}: {exc}")
 
+                # Captains tasks: generate blanks only for captains
+                if tour.get("captains_task") and getattr(participant, "is_captain", False):
+                    cap_task_numbers = tour.get("captains_task_numbers") or [1]
+                    cap_folder = f"{folder}/tour_{tour_number}/Задания для капитанов"
+                    for cap_task_num in cap_task_numbers:
+                        cap_qr_payload = f"attempt:{attempt.id}:tour:{tour_number}:captains_task:{cap_task_num}"
+                        try:
+                            cap_docx = word_generator.generate_answer_blank(
+                                qr_payload=cap_qr_payload,
+                                tour_number=tour_number,
+                                task_number=int(cap_task_num),
+                                mode="Задание для капитанов",
+                            )
+                            zf.writestr(f"{cap_folder}/задание_{cap_task_num}.docx", cap_docx)
+                            added_files += 1
+                            for extra_i in range(1, 6):
+                                cap_extra = word_generator.generate_answer_blank(
+                                    qr_payload=cap_qr_payload,
+                                    tour_number=tour_number,
+                                    task_number=int(cap_task_num),
+                                    mode="Задание для капитанов",
+                                    tour_task=f"{tour_number}/cap/{cap_task_num}/{extra_i}",
+                                )
+                                zf.writestr(f"{cap_folder}/дополнительные бланки/extra_{cap_task_num}_{extra_i}.docx", cap_extra)
+                                added_files += 1
+                        except Exception as exc:
+                            gen_errors.append(f"Задание капитанов {tour_number}/{cap_task_num}: {exc}")
+
         # --- Badge ---
         entry_token_raw = reg.entry_token.raw_token if reg.entry_token else None
         if entry_token_raw:
@@ -1655,7 +1694,7 @@ async def admit_and_download_single(
     encoded_name = quote(f"{participant.full_name}.zip", safe="")
     headers: dict[str, str] = {"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}"}
     if gen_errors:
-        headers["X-Warnings"] = "; ".join(gen_errors)
+        headers["X-Warnings"] = quote("; ".join(gen_errors), safe="")
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
@@ -1741,6 +1780,8 @@ def _build_tour_configs(competition) -> list[TourConfigItem]:
                 tour_number=int(t.get("tour_number", 0)),
                 mode=str(t.get("mode", "individual")),
                 task_numbers=[int(n) for n in t.get("task_numbers", [])],
+                captains_task=bool(t.get("captains_task", False)),
+                captains_task_numbers=[int(n) for n in t.get("captains_task_numbers", [])],
             ))
         return configs
     # Fallback: use special_tour_modes without task numbers
@@ -1783,6 +1824,7 @@ async def get_scoring_progress(
                     tour_number=t.tour_number,
                     task_scores=t.task_scores,
                     tour_total=t.tour_total,
+                    tour_time=t.tour_time,
                 )
                 for t in item.tours
             ],
@@ -2018,6 +2060,159 @@ async def export_scoring_progress_excel(
             "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
         },
     )
+
+
+@router.post("/competitions/{competition_id}/results-table/import")
+async def import_results_table(
+    competition_id: UUID,
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_role(UserRole.ADMIN, UserRole.SCANNER)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Import results from an XLSX file (same format as exported results table).
+
+    Matches participants by name (column D, "ФИО") and updates their task scores
+    per tour. Only non-empty score cells are applied; existing scores are preserved
+    if the imported cell is empty.
+    """
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="openpyxl не установлен") from exc
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Файл пустой")
+
+    from io import BytesIO
+    try:
+        wb = load_workbook(BytesIO(content), data_only=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Не удалось открыть XLSX: {exc}")
+
+    ws = wb.active
+    if not ws:
+        raise HTTPException(status_code=400, detail="В файле нет листов")
+
+    # Build tour configs to know column layout
+    competition_obj = await CompetitionRepositoryImpl(db).get_by_id(competition_id)
+    if not competition_obj:
+        raise HTTPException(status_code=404, detail="Олимпиада не найдена")
+
+    tour_configs = _build_tour_configs(competition_obj)
+    individual_tours = [tc for tc in tour_configs if tc.mode in ("individual", "individual_captains")]
+
+    # Reconstruct column layout (same as export_results_table)
+    DATA_ROW = 5
+    ci = 2
+    ci += 1  # num_col (B)
+    inst_col = ci; ci += 1  # C: institution
+    name_col = ci; ci += 1  # D: ФИО
+
+    tour_col_map: dict[int, dict] = {}
+    for tc in individual_tours:
+        n_tasks = len(tc.task_numbers) if tc.task_numbers else 1
+        task_cols = list(range(ci, ci + n_tasks)); ci += n_tasks
+        total_col = ci; ci += 1
+        time_col = ci; ci += 1
+        rank_col = ci; ci += 1
+        tour_col_map[tc.tour_number] = {
+            "task_cols": task_cols,
+            "n_tasks": n_tasks,
+            "task_numbers": tc.task_numbers,
+            "time_col": time_col,
+        }
+
+    # Load all participants with attempts
+    use_case = GetScoringProgressUseCase(
+        competition_repository=CompetitionRepositoryImpl(db),
+        registration_repository=RegistrationRepositoryImpl(db),
+        attempt_repository=AttemptRepositoryImpl(db),
+        participant_repository=ParticipantRepositoryImpl(db),
+    )
+    try:
+        result = await use_case.execute(competition_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    # Build name → item lookup (normalized)
+    def _norm(s: str) -> str:
+        return " ".join(s.strip().lower().split())
+
+    name_to_item: dict[str, object] = {}
+    for item in result.items:
+        name_to_item[_norm(item.participant_name)] = item
+
+    attempt_repo = AttemptRepositoryImpl(db)
+    updated_count = 0
+    skipped_names: list[str] = []
+
+    for row_idx in range(DATA_ROW, ws.max_row + 1):
+        raw_name = ws.cell(row=row_idx, column=name_col).value
+        if not raw_name or not isinstance(raw_name, str):
+            continue
+
+        # Strip grade suffix like " (9 кл.)"
+        clean_name = re.sub(r"\s*\(\d+\s*кл\.\)\s*$", "", raw_name.strip())
+        item = name_to_item.get(_norm(clean_name))
+        if not item:
+            skipped_names.append(clean_name)
+            continue
+
+        if not item.attempt_id:
+            skipped_names.append(clean_name)
+            continue
+
+        attempt = await attempt_repo.get_by_id(item.attempt_id)
+        if not attempt:
+            continue
+
+        changed = False
+        for tc in individual_tours:
+            tcm = tour_col_map.get(tc.tour_number)
+            if not tcm:
+                continue
+
+            task_nums = tcm["task_numbers"] or list(range(1, tcm["n_tasks"] + 1))
+            scores: dict[int, int] = {}
+
+            for i, col in enumerate(tcm["task_cols"]):
+                cell_val = ws.cell(row=row_idx, column=col).value
+                if cell_val is not None and isinstance(cell_val, (int, float)):
+                    scores[task_nums[i]] = int(cell_val)
+
+            # Parse time from time column
+            tour_time_str = None
+            time_val = ws.cell(row=row_idx, column=tcm["time_col"]).value
+            if time_val is not None:
+                from datetime import timedelta
+                if isinstance(time_val, timedelta):
+                    total_secs = int(time_val.total_seconds())
+                    h = total_secs // 3600
+                    m = (total_secs % 3600) // 60
+                    s = total_secs % 60
+                    tour_time_str = f"{h:02d}.{m:02d}.{s:02d}"
+                elif isinstance(time_val, str) and re.match(r"^\d{2}\.\d{2}\.\d{2}$", time_val):
+                    tour_time_str = time_val
+
+            if scores:
+                attempt.apply_task_scores(
+                    tour_number=tc.tour_number,
+                    scores=scores,
+                    tour_time=tour_time_str,
+                )
+                changed = True
+
+        if changed:
+            await attempt_repo.update(attempt)
+            updated_count += 1
+
+    return {
+        "status": "ok",
+        "updated": updated_count,
+        "skipped": skipped_names,
+        "total_rows": ws.max_row - DATA_ROW + 1 if ws.max_row >= DATA_ROW else 0,
+    }
 
 
 @router.get("/competitions/{competition_id}/results-table/export")
@@ -2290,12 +2485,23 @@ async def export_results_table(
             )
             _c(ws1.cell(row=row, column=tcm["total_col"]), f"={task_letters}")
 
-            # Tour time (competition-wide duration or blank)
-            tt = tour_time_map.get(tc.tour_number)
+            # Tour time (per-participant if available, else competition-wide)
             time_val = None
-            if tt and tt.duration_minutes is not None:
+            if tour_prog and tour_prog.tour_time:
+                # Parse hh.mm.ss format to timedelta
                 from datetime import timedelta
-                time_val = timedelta(minutes=tt.duration_minutes)
+                parts = tour_prog.tour_time.split(".")
+                if len(parts) == 3:
+                    try:
+                        h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
+                        time_val = timedelta(hours=h, minutes=m, seconds=s)
+                    except ValueError:
+                        pass
+            if time_val is None:
+                tt = tour_time_map.get(tc.tour_number)
+                if tt and tt.duration_minutes is not None:
+                    from datetime import timedelta
+                    time_val = timedelta(minutes=tt.duration_minutes)
             _d(ws1.cell(row=row, column=tcm["time_col"]), time_val)
 
             # Tour rank (formula)
@@ -3345,13 +3551,16 @@ async def get_special_templates_info(
     """Get Word template paths used for special olympiad documents."""
     generator = WordTemplateGenerator()
     paths = generator.get_template_paths()
-    return {
-        "templates": [
-            {"kind": "answer_blank", "path": paths["answer_blank"]},
-            {"kind": "a3_cover", "path": paths["a3_cover"]},
-            {"kind": "badge", "path": paths["badge"]},
-        ]
-    }
+    templates = []
+    for kind in ("answer_blank", "a3_cover", "badge"):
+        path = Path(paths[kind])
+        info: dict[str, Any] = {"kind": kind, "path": str(path), "filename": path.name}
+        if path.exists():
+            stat = path.stat()
+            info["size_bytes"] = stat.st_size
+            info["modified_at"] = datetime.fromtimestamp(stat.st_mtime).isoformat()
+        templates.append(info)
+    return {"templates": templates}
 
 
 @router.get("/special/templates/{template_kind}/download")
@@ -3408,6 +3617,27 @@ async def upload_special_template(
         raise HTTPException(status_code=500, detail=f"Не удалось сохранить шаблон: {exc}")
 
     return {"status": "ok", "template_kind": template_kind, "path": path}
+
+
+@router.delete("/special/templates/{template_kind}")
+async def delete_special_template(
+    template_kind: str,
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """Delete a custom DOCX template, restoring the default."""
+    generator = WordTemplateGenerator()
+    paths = generator.get_template_paths()
+
+    if template_kind not in paths:
+        raise HTTPException(status_code=404, detail="Неизвестный тип шаблона")
+
+    path = Path(paths[template_kind])
+    if path.exists():
+        path.unlink()
+
+    # Recreate default template
+    generator.ensure_templates_exist()
+    return {"status": "ok", "template_kind": template_kind, "message": "Шаблон сброшен на стандартный"}
 
 
 @router.post("/special/templates/badge/photos/upload")
@@ -3918,28 +4148,30 @@ async def admit_all_special_and_download(
                             }
                         )
 
-                # Captains task: generate extra blank only for captains
+                # Captains tasks: generate blanks only for captains
                 if tour.get("captains_task") and participant.is_captain:
-                    cap_qr_payload = f"attempt:{attempt.id}:tour:{tour_number}:captains_task"
-                    try:
-                        cap_docx = word_generator.generate_answer_blank(
-                            qr_payload=cap_qr_payload,
-                            tour_number=tour_number,
-                            task_number=0,
-                            mode="Задача капитанов",
-                        )
-                        cap_folder = f"{folder}/tour_{tour_number}/Задача капитанов"
-                        zf.writestr(f"{cap_folder}/задача_капитанов.docx", cap_docx)
-                        added_files += 1
-                        for extra_i in range(1, 6):
-                            cap_extra = word_generator.generate_answer_blank(
+                    cap_task_numbers = tour.get("captains_task_numbers") or [1]
+                    cap_folder = f"{folder}/tour_{tour_number}/Задания для капитанов"
+                    for cap_task_num in cap_task_numbers:
+                        cap_qr_payload = f"attempt:{attempt.id}:tour:{tour_number}:captains_task:{cap_task_num}"
+                        try:
+                            cap_docx = word_generator.generate_answer_blank(
                                 qr_payload=cap_qr_payload,
                                 tour_number=tour_number,
-                                task_number=0,
-                                mode="Задача капитанов",
-                                tour_task=f"{tour_number}/cap/{extra_i}",
+                                task_number=int(cap_task_num),
+                                mode="Задание для капитанов",
                             )
-                            zf.writestr(f"{cap_folder}/дополнительные бланки/extra_{extra_i}.docx", cap_extra)
+                            zf.writestr(f"{cap_folder}/задание_{cap_task_num}.docx", cap_docx)
+                            added_files += 1
+                            for extra_i in range(1, 6):
+                                cap_extra = word_generator.generate_answer_blank(
+                                    qr_payload=cap_qr_payload,
+                                    tour_number=tour_number,
+                                    task_number=int(cap_task_num),
+                                    mode="Задание для капитанов",
+                                    tour_task=f"{tour_number}/cap/{cap_task_num}/{extra_i}",
+                                )
+                                zf.writestr(f"{cap_folder}/дополнительные бланки/extra_{cap_task_num}_{extra_i}.docx", cap_extra)
                             added_files += 1
                     except Exception as exc:  # noqa: BLE001
                         admit_errors.append(

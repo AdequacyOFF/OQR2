@@ -449,7 +449,7 @@ async def qr_score_entry(
     scores_dict: dict[int, int] = {item.task_number: item.score for item in body.task_scores}
 
     try:
-        attempt.apply_task_scores(tour_number=body.tour_number, scores=scores_dict)
+        attempt.apply_task_scores(tour_number=body.tour_number, scores=scores_dict, tour_time=body.tour_time)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

@@ -128,6 +128,7 @@ class TourProgress(BaseModel):
     tour_number: int
     task_scores: Optional[Dict[str, int]] = None
     tour_total: Optional[int] = None
+    tour_time: Optional[str] = None
 
 
 class TourTimeItem(BaseModel):
@@ -150,6 +151,7 @@ class TourConfigItem(BaseModel):
     mode: str  # "individual" | "individual_captains" | "team"
     task_numbers: list[int] = []
     captains_task: bool = False
+    captains_task_numbers: list[int] = []
 
 
 class ScoringProgressItem(BaseModel):

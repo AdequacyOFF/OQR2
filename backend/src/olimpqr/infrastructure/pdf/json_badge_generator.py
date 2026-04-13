@@ -460,7 +460,23 @@ class JsonBadgeGenerator:
         h: float,
     ) -> None:
         try:
-            reader = ImageReader(io.BytesIO(img_bytes))
+            from PIL import Image as PILImage
+
+            pil_img = PILImage.open(io.BytesIO(img_bytes))
+            if pil_img.mode in ("RGBA", "LA") or (
+                pil_img.mode == "P" and "transparency" in pil_img.info
+            ):
+                # Flatten transparency onto white background
+                background = PILImage.new("RGB", pil_img.size, (255, 255, 255))
+                if pil_img.mode == "P":
+                    pil_img = pil_img.convert("RGBA")
+                background.paste(pil_img, mask=pil_img.split()[-1])
+                buf = io.BytesIO()
+                background.save(buf, format="PNG")
+                buf.seek(0)
+                reader = ImageReader(buf)
+            else:
+                reader = ImageReader(io.BytesIO(img_bytes))
             c.drawImage(reader, x_rl, y_rl, width=w, height=h, preserveAspectRatio=False)
         except Exception as exc:
             logger.warning("Cannot draw image: %s", exc)

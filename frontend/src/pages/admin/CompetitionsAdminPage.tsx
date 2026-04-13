@@ -97,6 +97,7 @@ const CompetitionsAdminPage: React.FC = () => {
   const [specialTourModes, setSpecialTourModes] = useState<string[]>([]);
   const [specialTourTasks, setSpecialTourTasks] = useState<string[]>([]);
   const [specialTourCaptainsTask, setSpecialTourCaptainsTask] = useState<boolean[]>([]);
+  const [specialTourCaptainsTasks, setSpecialTourCaptainsTasks] = useState<string[]>([]);
   const [specialCaptainsRoomId, setSpecialCaptainsRoomId] = useState('');
   const [specialRoomLayouts, setSpecialRoomLayouts] = useState<RoomLayoutState>({});
   const [teamTableMergesTour3, setTeamTableMergesTour3] = useState<TeamTableMergeState>({});
@@ -118,6 +119,8 @@ const CompetitionsAdminPage: React.FC = () => {
   const [badgeFontsUploading, setBadgeFontsUploading] = useState(false);
   const [templateUploadingKind, setTemplateUploadingKind] = useState<SpecialTemplateKind | null>(null);
   const [templateDownloadingKind, setTemplateDownloadingKind] = useState<SpecialTemplateKind | null>(null);
+  const [templateDeletingKind, setTemplateDeletingKind] = useState<SpecialTemplateKind | null>(null);
+  const [templateInfo, setTemplateInfo] = useState<Record<string, { filename: string; modified_at?: string }>>({});
 
   // Delete / replace participant state
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -195,6 +198,10 @@ const CompetitionsAdminPage: React.FC = () => {
     });
     setSpecialTourCaptainsTask((prev) => {
       const next = Array.from({ length: count }, (_, idx) => prev[idx] || false);
+      return next;
+    });
+    setSpecialTourCaptainsTasks((prev) => {
+      const next = Array.from({ length: count }, (_, idx) => prev[idx] || '');
       return next;
     });
   }, [isSpecialCompetition, specialToursCount]);
@@ -321,14 +328,19 @@ const CompetitionsAdminPage: React.FC = () => {
           : [1];
         const rawTourNumber = (item as { tour_number?: unknown }).tour_number;
         const captainsTask = Boolean((item as { captains_task?: unknown }).captains_task);
+        const rawCaptainsTaskNumbers = (item as { captains_task_numbers?: unknown }).captains_task_numbers;
+        const captainsTaskNumbers = Array.isArray(rawCaptainsTaskNumbers)
+          ? rawCaptainsTaskNumbers.map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0)
+          : [];
         return {
           tourNumber: parsePositiveInt(rawTourNumber, index + 1),
           mode,
           taskNumbers: taskNumbers.length ? Array.from(new Set(taskNumbers)) : [1],
           captainsTask,
+          captainsTaskNumbers,
         };
       })
-      .filter((item): item is { tourNumber: number; mode: string; taskNumbers: number[]; captainsTask: boolean } => item !== null);
+      .filter((item): item is { tourNumber: number; mode: string; taskNumbers: number[]; captainsTask: boolean; captainsTaskNumbers: number[] } => item !== null);
   }
 
   function extractRoomLayoutsFromSettings(comp: Competition): RoomLayoutState {
@@ -459,6 +471,12 @@ const CompetitionsAdminPage: React.FC = () => {
         return toursFromSettings[index]?.captainsTask || false;
       })
     );
+    setSpecialTourCaptainsTasks(
+      Array.from({ length: effectiveTourCount }, (_, index) => {
+        const ctn = toursFromSettings[index]?.captainsTaskNumbers;
+        return ctn && ctn.length > 0 ? ctn.join(', ') : '';
+      })
+    );
     setSpecialCaptainsRoomId(typeof rawCaptainsRoomId === 'string' ? rawCaptainsRoomId : '');
     setSpecialRoomLayouts(parsedRoomLayouts);
     setTeamTableMergesTour3(parsedTour3TableMerges);
@@ -563,6 +581,9 @@ const CompetitionsAdminPage: React.FC = () => {
         mode,
         task_numbers: parseTaskNumbersInput(specialTourTasks[index] || '1'),
         captains_task: specialTourCaptainsTask[index] || false,
+        captains_task_numbers: specialTourCaptainsTask[index]
+          ? parseTaskNumbersInput(specialTourCaptainsTasks[index] || '1')
+          : [],
       }));
       const normalizedRoomLayouts = Object.fromEntries(
         Object.entries(specialRoomLayouts).map(([roomId, layout]) => [
@@ -669,6 +690,17 @@ const CompetitionsAdminPage: React.FC = () => {
     setA3TemplateFile(null);
     setBadgeTemplateFile(null);
     setBadgePhotosZipFile(null);
+    // Fetch template info
+    api.get<{ templates: { kind: string; filename: string; modified_at?: string }[] }>('admin/special/templates')
+      .then(({ data }) => {
+        const info: Record<string, { filename: string; modified_at?: string }> = {};
+        for (const t of data.templates) {
+          info[t.kind] = { filename: t.filename, modified_at: t.modified_at };
+        }
+        setTemplateInfo(info);
+      })
+      .catch(() => {});
+
     try {
       const [regRes, participantsRes] = await Promise.all([
         api.get<{ items: AdminRegistrationItem[]; total: number }>(`admin/registrations/${comp.id}`),
@@ -1115,6 +1147,23 @@ const CompetitionsAdminPage: React.FC = () => {
     }
   };
 
+  const handleDeleteTemplate = async (kind: SpecialTemplateKind) => {
+    if (!confirm('Сбросить шаблон на стандартный?')) return;
+    setTemplateDeletingKind(kind);
+    setError(null);
+    try {
+      await api.delete(`admin/special/templates/${kind}`);
+      alert('Шаблон сброшен на стандартный.');
+    } catch (err: unknown) {
+      const message =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Не удалось удалить шаблон.';
+      setError(message);
+    } finally {
+      setTemplateDeletingKind(null);
+    }
+  };
+
   const handleUploadBadgePhotosZip = async () => {
     if (!badgePhotosZipFile) return;
     setBadgePhotosUploading(true);
@@ -1438,16 +1487,29 @@ const CompetitionsAdminPage: React.FC = () => {
                             setSpecialTourTasks((prev) => prev.map((tasks, i) => (i === index ? e.target.value : tasks)))
                           }
                         />
-                        <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, whiteSpace: 'nowrap', cursor: 'pointer' }}>
-                          <input
-                            type="checkbox"
-                            checked={specialTourCaptainsTask[index] || false}
-                            onChange={(e) =>
-                              setSpecialTourCaptainsTask((prev) => prev.map((v, i) => (i === index ? e.target.checked : v)))
-                            }
-                          />
-                          Задача капитанов
-                        </label>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, whiteSpace: 'nowrap', cursor: 'pointer' }}>
+                            <input
+                              type="checkbox"
+                              checked={specialTourCaptainsTask[index] || false}
+                              onChange={(e) =>
+                                setSpecialTourCaptainsTask((prev) => prev.map((v, i) => (i === index ? e.target.checked : v)))
+                              }
+                            />
+                            Задания для капитанов
+                          </label>
+                          {specialTourCaptainsTask[index] && (
+                            <input
+                              className="input"
+                              placeholder="Задания: 1,2"
+                              value={specialTourCaptainsTasks[index] || ''}
+                              onChange={(e) =>
+                                setSpecialTourCaptainsTasks((prev) => prev.map((v, i) => (i === index ? e.target.value : v)))
+                              }
+                              style={{ fontSize: 12, padding: '4px 8px', minWidth: 100 }}
+                            />
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -1768,10 +1830,36 @@ const CompetitionsAdminPage: React.FC = () => {
                   <Button
                     onClick={handleAdmitAllAndDownload}
                     loading={admitAndDownloadLoading}
+                    disabled={admitAndDownloadLoading}
                   >
                     Допустить всех + ZIP
                   </Button>
                 </div>
+                {admitAndDownloadLoading && (
+                  <div style={{ marginTop: 8, marginBottom: 12 }}>
+                    <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 6 }}>
+                      Генерация бланков для всех участников... Это может занять несколько минут.
+                    </div>
+                    <div style={{ width: '100%', height: 6, background: '#e5e7eb', borderRadius: 3, overflow: 'hidden' }}>
+                      <div
+                        style={{
+                          width: '40%',
+                          height: '100%',
+                          background: 'linear-gradient(90deg, #3b82f6 0%, #60a5fa 50%, #3b82f6 100%)',
+                          borderRadius: 3,
+                          animation: 'admitProgress 1.5s ease-in-out infinite',
+                        }}
+                      />
+                    </div>
+                    <style>{`
+                      @keyframes admitProgress {
+                        0% { margin-left: 0%; width: 40%; }
+                        50% { margin-left: 60%; width: 40%; }
+                        100% { margin-left: 0%; width: 40%; }
+                      }
+                    `}</style>
+                  </div>
+                )}
                 <p className="text-muted" style={{ fontSize: 12, marginBottom: 12 }}>
                   Форматы импорта: JSON/CSV/XLSX. Архив включает DOCX-бланки, A3-обложки и legacy PDF.
                 </p>
@@ -1784,7 +1872,14 @@ const CompetitionsAdminPage: React.FC = () => {
 
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12 }}>
                     <div>
-                      <label className="label" style={{ marginBottom: 4, display: 'block' }}>Шаблон бланка задания</label>
+                      <label className="label" style={{ marginBottom: 4, display: 'block' }}>
+                        Шаблон бланка задания
+                        {templateInfo.answer_blank && (
+                          <span style={{ fontWeight: 400, fontSize: 11, color: '#6b7280', marginLeft: 8 }}>
+                            ({templateInfo.answer_blank.filename}{templateInfo.answer_blank.modified_at ? `, обновлен: ${new Date(templateInfo.answer_blank.modified_at).toLocaleString('ru-RU')}` : ''})
+                          </span>
+                        )}
+                      </label>
                       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                         <input
                           type="file"
@@ -1806,11 +1901,25 @@ const CompetitionsAdminPage: React.FC = () => {
                         >
                           Загрузить
                         </Button>
+                        <Button
+                          variant="danger"
+                          onClick={() => handleDeleteTemplate('answer_blank')}
+                          loading={templateDeletingKind === 'answer_blank'}
+                        >
+                          Сбросить
+                        </Button>
                       </div>
                     </div>
 
                     <div>
-                      <label className="label" style={{ marginBottom: 4, display: 'block' }}>Шаблон A3-обложки</label>
+                      <label className="label" style={{ marginBottom: 4, display: 'block' }}>
+                        Шаблон A3-обложки
+                        {templateInfo.a3_cover && (
+                          <span style={{ fontWeight: 400, fontSize: 11, color: '#6b7280', marginLeft: 8 }}>
+                            ({templateInfo.a3_cover.filename}{templateInfo.a3_cover.modified_at ? `, обновлен: ${new Date(templateInfo.a3_cover.modified_at).toLocaleString('ru-RU')}` : ''})
+                          </span>
+                        )}
+                      </label>
                       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                         <input
                           type="file"
@@ -1832,11 +1941,25 @@ const CompetitionsAdminPage: React.FC = () => {
                         >
                           Загрузить
                         </Button>
+                        <Button
+                          variant="danger"
+                          onClick={() => handleDeleteTemplate('a3_cover')}
+                          loading={templateDeletingKind === 'a3_cover'}
+                        >
+                          Сбросить
+                        </Button>
                       </div>
                     </div>
 
                     <div>
-                      <label className="label" style={{ marginBottom: 4, display: 'block' }}>Шаблон бейджа</label>
+                      <label className="label" style={{ marginBottom: 4, display: 'block' }}>
+                        Шаблон бейджа
+                        {templateInfo.badge && (
+                          <span style={{ fontWeight: 400, fontSize: 11, color: '#6b7280', marginLeft: 8 }}>
+                            ({templateInfo.badge.filename}{templateInfo.badge.modified_at ? `, обновлен: ${new Date(templateInfo.badge.modified_at).toLocaleString('ru-RU')}` : ''})
+                          </span>
+                        )}
+                      </label>
                       <p className="text-muted" style={{ fontSize: 12, marginBottom: 6 }}>
                         Токены бейджа: {'{{QR_IMAGE}}'}, {'{{FIRST_NAME}}'}, {'{{LAST_NAME}}'}, {'{{MIDDLE_NAME}}'}, {'{{ROLE}}'}, {'{{PHOTO}}'}.
                       </p>
