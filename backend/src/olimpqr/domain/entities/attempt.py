@@ -74,16 +74,24 @@ class Attempt:
         self.status = AttemptStatus.PUBLISHED
         self.updated_at = datetime.utcnow()
 
-    def apply_task_scores(self, tour_number: int, scores: dict[int, int], tour_time: str | None = None) -> None:
+    def apply_task_scores(
+        self,
+        tour_number: int,
+        scores: dict[int, int],
+        tour_time: str | None = None,
+        is_captains_task: bool = False,
+    ) -> None:
         """Apply per-task scores for a specific tour.
 
         Updates task_scores JSON, recomputes score_total as the sum of
-        all task scores across all tours, and marks the attempt as SCORED.
+        all regular tour task scores. Captain task scores (is_captains_task=True)
+        are stored under "captains_task" key and excluded from personal total.
 
         Args:
             tour_number: Tour number (1-based)
             scores: Mapping of task_number -> score for this tour
             tour_time: Optional per-participant time in hh.mm.ss format
+            is_captains_task: When True, scores are stored under "captains_task" key
         """
         if tour_number < 1:
             raise ValueError("Номер тура должен быть положительным")
@@ -92,22 +100,31 @@ class Attempt:
                 raise ValueError(f"Балл за задание {task_num} не может быть отрицательным")
 
         current = dict(self.task_scores) if self.task_scores else {}
-        tour_data: dict[str, int | str] = {str(k): v for k, v in scores.items()}
-        if tour_time is not None:
-            tour_data["time"] = tour_time
-        elif str(tour_number) in current and "time" in current[str(tour_number)]:
-            # Preserve existing time if not provided in this update
-            tour_data["time"] = current[str(tour_number)]["time"]
-        current[str(tour_number)] = tour_data
+
+        if is_captains_task:
+            # Captain task scores stored separately with tour reference — not counted in personal total
+            current[f"cap_{tour_number}"] = {str(k): v for k, v in scores.items()}
+        else:
+            tour_data: dict[str, int | str] = {str(k): v for k, v in scores.items()}
+            if tour_time is not None:
+                tour_data["time"] = tour_time
+            elif str(tour_number) in current and isinstance(current[str(tour_number)], dict) and "time" in current[str(tour_number)]:
+                # Preserve existing time if not provided in this update
+                tour_data["time"] = current[str(tour_number)]["time"]
+            current[str(tour_number)] = tour_data
+
         self.task_scores = current
 
-        # Recompute total across all tours and tasks (skip "time" key)
-        total = sum(
-            score
-            for tour_data in current.values()
-            for key, score in tour_data.items()
-            if key != "time" and isinstance(score, int)
-        )
+        # Recompute personal total — only numeric-keyed tours (cap_N keys excluded)
+        total = 0
+        for key, tdata in current.items():
+            if not key.isdigit():
+                continue  # skip "cap_N", "captains_task" (legacy), etc.
+            if not isinstance(tdata, dict):
+                continue
+            for field_key, val in tdata.items():
+                if field_key != "time" and isinstance(val, int):
+                    total += val
         self.score_total = total
         self.status = AttemptStatus.SCORED
         self.updated_at = datetime.utcnow()

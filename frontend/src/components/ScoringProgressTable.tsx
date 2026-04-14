@@ -105,7 +105,7 @@ const ScoringProgressTable: React.FC<Props> = ({
   const [data, setData] = useState<ScoringProgressResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [sortKeys, setSortKeys] = useState<SortKey[]>([]);
+  const [sortKeys, setSortKeys] = useState<SortKey[]>([{ col: 'total', dir: 'desc' }]);
   const [filterMode, setFilterMode] = useState<FilterMode>('all');
   const highlightRef = useRef<HTMLTableRowElement | null>(null);
 
@@ -271,6 +271,7 @@ const ScoringProgressTable: React.FC<Props> = ({
     institution: string;
     members: ScoringProgressItem[];
     teamTotal: number | null;
+    teamTime: number | null;
   }
 
   const buildTeamRows = (): TeamRow[] => {
@@ -282,18 +283,38 @@ const ScoringProgressTable: React.FC<Props> = ({
     }
     const rows: TeamRow[] = Object.entries(groups).map(([inst, members]) => {
       let teamTotal: number | null = null;
+      let teamTime: number | null = null;
       for (const m of members) {
         const t = calcFilteredTotal(m);
         if (t !== null) {
           teamTotal = (teamTotal ?? 0) + t;
         }
+        const secs = getTotalTimeSeconds(m);
+        if (secs !== null) {
+          teamTime = (teamTime ?? 0) + secs;
+        }
       }
-      return { institution: inst, members, teamTotal };
+      return { institution: inst, members, teamTotal, teamTime };
     });
+    // Sort using sortKeys; default: by teamTotal desc + time asc tiebreaker
+    const sortCol = sortKeys.length > 0 ? sortKeys[0].col : 'total';
+    const sortDir = sortKeys.length > 0 ? sortKeys[0].dir : 'desc';
     rows.sort((a, b) => {
-      if (a.teamTotal === null) return 1;
-      if (b.teamTotal === null) return -1;
-      return b.teamTotal - a.teamTotal;
+      let va: number | null = null;
+      let vb: number | null = null;
+      if (sortCol === 'total') {
+        va = a.teamTotal; vb = b.teamTotal;
+      }
+      if (va === null && vb === null) return 0;
+      if (va === null) return 1;
+      if (vb === null) return -1;
+      const cmp = sortDir === 'desc' ? vb - va : va - vb;
+      if (cmp !== 0) return cmp;
+      // time tiebreaker: less time = higher rank
+      if (a.teamTime === null && b.teamTime === null) return 0;
+      if (a.teamTime === null) return 1;
+      if (b.teamTime === null) return -1;
+      return a.teamTime - b.teamTime;
     });
     return rows;
   };
@@ -605,7 +626,35 @@ const ScoringProgressTable: React.FC<Props> = ({
                       {isScored ? filteredTotal : '—'}
                     </td>
                     <td style={{ ...tdStyle, textAlign: 'center' }}>
-                      {isScored ? (
+                      {data.is_special && visibleTours.length > 0 ? (
+                        <div style={{ display: 'flex', gap: 3, justifyContent: 'center', flexWrap: 'wrap' }}>
+                          {visibleTours.map((tourNum) => {
+                            const tourData = item.tours.find((t) => t.tour_number === tourNum);
+                            const tourScored = tourData?.tour_total !== null && tourData?.tour_total !== undefined;
+                            return (
+                              <span
+                                key={tourNum}
+                                title={`Тур ${tourNum}: ${tourScored ? 'заполнен' : 'не заполнен'}`}
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  width: 16,
+                                  height: 16,
+                                  borderRadius: '50%',
+                                  background: tourScored ? '#22c55e' : '#e5e7eb',
+                                  color: 'white',
+                                  fontSize: 9,
+                                  fontWeight: 700,
+                                  flexShrink: 0,
+                                }}
+                              >
+                                {tourScored ? '✓' : ''}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      ) : isScored ? (
                         <span
                           title="Баллы внесены"
                           style={{

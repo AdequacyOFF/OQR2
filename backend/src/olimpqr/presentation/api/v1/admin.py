@@ -1555,11 +1555,22 @@ async def admit_and_download_single(
                 "individual_captains": "Индивидуальный (капитаны)",
                 "team": "Командный",
             }
+            is_captain = getattr(participant, "is_captain", False)
+            institution_name_for_team = participant.institution.name if participant.institution else (participant.school or "Команда")
+
             for tour in tours:
                 tour_number = int(tour["tour_number"])
                 mode = str(tour["mode"])
                 mode_label = mode_labels.get(mode, mode)
                 task_numbers = tour["task_numbers"]
+                is_team_tour = mode == "team"
+
+                # Team tours: only generate sheets for captains (one set per institution)
+                if is_team_tour and not is_captain:
+                    continue
+
+                # For team tours, use institution name as the subfolder root
+                tour_folder_root = _slugify_folder_name(institution_name_for_team) if is_team_tour else folder
 
                 cover_qr_payload = f"attempt:{attempt.id}:tour:{tour_number}:cover"
                 try:
@@ -1568,7 +1579,7 @@ async def admit_and_download_single(
                         tour_number=tour_number,
                         mode=mode_label,
                     )
-                    zf.writestr(f"{folder}/tour_{tour_number}/A3_tour_{tour_number}.docx", cover_docx)
+                    zf.writestr(f"{tour_folder_root}/tour_{tour_number}/A3_tour_{tour_number}.docx", cover_docx)
                     added_files += 1
                 except Exception as exc:
                     gen_errors.append(f"A3 тур {tour_number}: {exc}")
@@ -1582,7 +1593,7 @@ async def admit_and_download_single(
                             task_number=int(task_number),
                             mode=mode_label,
                         )
-                        task_folder = f"{folder}/tour_{tour_number}/task_{task_number}"
+                        task_folder = f"{tour_folder_root}/tour_{tour_number}/task_{task_number}"
                         zf.writestr(f"{task_folder}/task_{task_number}.docx", task_docx)
                         added_files += 1
                         for extra_i in range(1, 6):
@@ -1602,7 +1613,7 @@ async def admit_and_download_single(
                         gen_errors.append(f"Задание {tour_number}/{task_number}: {exc}")
 
                 # Captains tasks: generate blanks only for captains
-                if tour.get("captains_task") and getattr(participant, "is_captain", False):
+                if tour.get("captains_task") and is_captain:
                     cap_task_numbers = tour.get("captains_task_numbers") or [1]
                     cap_folder = f"{folder}/tour_{tour_number}/Задания для капитанов"
                     for cap_task_num in cap_task_numbers:
@@ -1830,6 +1841,7 @@ async def get_scoring_progress(
             ],
             score_total=item.score_total,
             is_captain=item.is_captain,
+            captains_task_by_tour=item.captains_task_by_tour,
         )
         for item in result.items
     ]
@@ -1941,12 +1953,14 @@ async def export_scoring_progress_excel(
 
         # Per tour: task columns + итог тура + время тура
         tour_col_spans: list[tuple[int, int]] = []  # (start_col_1based, count)
+        tour_time_col_map: dict[int, int] = {}  # tour_number -> 1-based column index
         col_headers: list[str] = list(fixed_cols)
         for tc in tour_configs:
             start = len(col_headers) + 1
             for task_num in tc.task_numbers:
                 col_headers.append(f"Задание {task_num}")
             col_headers.append("Итог тура")
+            tour_time_col_map[tc.tour_number] = len(col_headers) + 1
             col_headers.append("Время тура")
             span = len(tc.task_numbers) + 2
             tour_col_spans.append((start, span))
@@ -1985,6 +1999,20 @@ async def export_scoring_progress_excel(
             _set_header(ws.cell(row=4, column=c), name)
 
         # Row 5+: Data
+        def _parse_tour_time_str(s: str | None):
+            """Convert hh.mm.ss string to timedelta, or None."""
+            if not s:
+                return None
+            parts = s.split(".")
+            if len(parts) != 3:
+                return None
+            try:
+                from datetime import timedelta as _td
+                h, m, sec = int(parts[0]), int(parts[1]), int(parts[2])
+                return _td(hours=h, minutes=m, seconds=sec)
+            except (ValueError, TypeError):
+                return None
+
         for item in result.items:
             row_data: list = [
                 item.participant_school,
@@ -2000,9 +2028,22 @@ async def export_scoring_progress_excel(
                     else:
                         row_data.append(None)
                 row_data.append(tour.tour_total if tour else None)
-                row_data.append(tour.tour_time if tour and tour.tour_time else "")
+                row_data.append(None)  # time placeholder — written below with number_format
             row_data.append(item.score_total)
             ws.append(row_data)
+
+            # Write time cells with [h]:mm:ss number format
+            data_row = ws.max_row
+            for tc in tour_configs:
+                tour = next((t for t in item.tours if t.tour_number == tc.tour_number), None)
+                time_val = _parse_tour_time_str(tour.tour_time if tour else None)
+                time_col = tour_time_col_map[tc.tour_number]
+                cell = ws.cell(row=data_row, column=time_col)
+                cell.value = time_val
+                cell.alignment = center
+                cell.border = border
+                if time_val is not None:
+                    cell.number_format = '[h]:mm:ss'
 
         # Set column widths
         ws.column_dimensions[get_column_letter(1)].width = 30  # ВУЗ
@@ -2370,6 +2411,7 @@ async def export_results_table(
     team_tours = [tc for tc in tour_configs if tc.mode == "team"]
 
     # Build captain bonus lookup: institution_name → tour_number → total_score
+    # Sources: (1) individual_captains tour totals, (2) cap_N task scores from captains_task_by_tour
     captain_bonus: dict[str, dict[int, int | None]] = {}
     for item in result.items:
         if item.is_captain:
@@ -2377,6 +2419,13 @@ async def export_results_table(
             for t in item.tours:
                 if any(tc.tour_number == t.tour_number for tc in captain_tours):
                     captain_bonus.setdefault(inst, {})[t.tour_number] = t.tour_total
+            # Also include cap_N scores from captains_task_by_tour
+            for tour_n, cap_score in (item.captains_task_by_tour or {}).items():
+                existing = captain_bonus.setdefault(inst, {}).get(tour_n)
+                if existing is None:
+                    captain_bonus[inst][tour_n] = cap_score
+                else:
+                    captain_bonus[inst][tour_n] = existing + cap_score
 
     # Build team tour data: institution_name → tour_number → total_score
     team_tour_data: dict[str, dict[int, int | None]] = {}
@@ -3592,6 +3641,15 @@ async def get_special_templates_info(
     for kind in ("answer_blank", "a3_cover", "badge"):
         path = Path(paths[kind])
         info: dict[str, Any] = {"kind": kind, "path": str(path), "filename": path.name}
+        # Read original uploaded filename from sidecar .meta file
+        meta_path = Path(f"{paths[kind]}.meta")
+        if meta_path.exists():
+            try:
+                info["display_filename"] = meta_path.read_text(encoding="utf-8").strip()
+            except Exception:
+                info["display_filename"] = path.name if path.exists() else "Нет шаблона"
+        else:
+            info["display_filename"] = "Нет шаблона"
         if path.exists():
             stat = path.stat()
             info["size_bytes"] = stat.st_size
@@ -3653,6 +3711,13 @@ async def upload_special_template(
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Не удалось сохранить шаблон: {exc}")
 
+    # Save original filename to sidecar .meta file
+    meta_path = Path(f"{path}.meta")
+    try:
+        meta_path.write_text(file.filename or path, encoding="utf-8")
+    except Exception:
+        pass
+
     return {"status": "ok", "template_kind": template_kind, "path": path}
 
 
@@ -3671,6 +3736,11 @@ async def delete_special_template(
     path = Path(paths[template_kind])
     if path.exists():
         path.unlink()
+
+    # Remove sidecar .meta file
+    meta_path = Path(f"{paths[template_kind]}.meta")
+    if meta_path.exists():
+        meta_path.unlink()
 
     # Recreate default template
     generator.ensure_templates_exist()

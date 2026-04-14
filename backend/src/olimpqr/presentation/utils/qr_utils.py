@@ -30,7 +30,7 @@ ANSWER_BLANK_PATTERN = re.compile(
 # Matches captains-task QR: attempt:<UUID>:tour:<N>:captains_task[:<M>]
 CAPTAINS_TASK_PATTERN = re.compile(
     r"attempt[:/](?P<attempt_id>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
-    r"[:/]tour[:/](?P<tour_number>\d+)[:/]captains_task(?:[:/]\d+)?",
+    r"[:/]tour[:/](?P<tour_number>\d+)[:/]captains_task(?:[:/](?P<cap_task>\d+))?",
     re.IGNORECASE,
 )
 
@@ -74,17 +74,35 @@ def extract_attempt_id(token: str) -> UUID | None:
         return None
 
 
+def extract_captains_task_info(token: str) -> tuple[UUID, int, int] | None:
+    """Extract (attempt_id, tour_number, cap_task_number) from a captains-task QR payload.
+
+    Matches ``attempt:<UUID>:tour:<N>:captains_task:<M>`` format.
+    Returns None if the token does not match.
+    """
+    match = CAPTAINS_TASK_PATTERN.search(token)
+    if not match:
+        return None
+    try:
+        attempt_id = UUID(match.group("attempt_id"))
+        tour_number = int(match.group("tour_number"))
+        cap_task_raw = match.group("cap_task")
+        cap_task_number = int(cap_task_raw) if cap_task_raw else 1
+        return attempt_id, tour_number, cap_task_number
+    except (ValueError, IndexError):
+        return None
+
+
 def extract_a3_cover_info(token: str) -> tuple[UUID, int] | None:
     """Extract (attempt_id, tour_number) from an A3-cover or answer-blank QR payload.
 
-    Supports both ``attempt:<UUID>:tour:<N>:cover`` and ``attempt:<UUID>:tour:<N>:task:<M>`` formats.
+    Supports ``attempt:<UUID>:tour:<N>:cover`` and ``attempt:<UUID>:tour:<N>:task:<M>`` formats.
+    Does NOT match captains_task tokens (use extract_captains_task_info for those).
     Returns None if the token matches neither format.
     """
     match = A3_COVER_PATTERN.search(token)
     if not match:
         match = ANSWER_BLANK_PATTERN.search(token)
-    if not match:
-        match = CAPTAINS_TASK_PATTERN.search(token)
     if not match:
         return None
     try:

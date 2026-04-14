@@ -75,7 +75,10 @@
       "Bash(ls node_modules/.bin/tsc*)",
       "Bash(ls node_modules/typescript/bin/)",
       "Bash(npm ls:*)",
-      "Bash(cmd.exe /c \"node_modules\\\\.bin\\\\tsc --noEmit 2>&1\")"
+      "Bash(cmd.exe /c \"node_modules\\\\.bin\\\\tsc --noEmit 2>&1\")",
+      "Bash(grep -n \"TourTime\\\\|team_sheet\\\\|is_team\\\\|institution_id\" D:/Projects/Kafedra/OQR2/backend/src/olimpqr/infrastructure/database/models/*.py)",
+      "Bash(grep -n \"original_filename\\\\|file_path\" /d/Projects/Kafedra/OQR2/backend/src/olimpqr/application/use_cases/documents/*.py)",
+      "Bash(grep -i \"\\\\.tsx$\")"
     ],
     "deny": [],
     "ask": []

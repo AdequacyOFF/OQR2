@@ -97,6 +97,9 @@ class ResolveQRResponse(BaseModel):
     competition_name: str
     is_special: bool
     task_numbers: list[int] = Field(default_factory=list, description="Task numbers for this tour")
+    tour_mode: Optional[str] = Field(None, description="Tour mode: individual / individual_captains / team")
+    is_captains_task: bool = Field(False, description="True when QR encodes a captains task blank")
+    cap_task_number: Optional[int] = Field(None, description="Captain task number (when is_captains_task=True)")
 
 
 class TaskScoreItem(BaseModel):
@@ -111,6 +114,7 @@ class QRScoreEntryRequest(BaseModel):
     tour_number: int = Field(..., ge=1)
     task_scores: list[TaskScoreItem] = Field(..., min_length=1)
     tour_time: str | None = Field(None, description="Per-participant tour time in h.m.s or hh.mm.ss format")
+    is_captains_task: bool = Field(False, description="When True, scores are stored as captain task bonus (excluded from personal total)")
 
     @field_validator("tour_time", mode="before")
     @classmethod

@@ -26,6 +26,9 @@ interface ResolveQRResponse {
   competition_name: string;
   is_special: boolean;
   task_numbers: number[];
+  tour_mode: string | null;
+  is_captains_task: boolean;
+  cap_task_number: number | null;
 }
 
 interface AttemptResponse {
@@ -47,7 +50,8 @@ const ManualQRScoringPage: React.FC = () => {
 
   const [resolved, setResolved] = useState<ResolveQRResponse | null>(null);
   const [taskScores, setTaskScores] = useState<Record<number, string>>({});
-  const [tourTime, setTourTime] = useState('');
+  const [tourStart, setTourStart] = useState('');
+  const [tourEnd, setTourEnd] = useState('');
   const [resultAttempt, setResultAttempt] = useState<AttemptResponse | null>(null);
 
   // Progress table state
@@ -74,7 +78,8 @@ const ManualQRScoringPage: React.FC = () => {
       const initial: Record<number, string> = {};
       for (const t of data.task_numbers) initial[t] = '';
       setTaskScores(initial);
-      setTourTime('');
+      setTourStart('');
+      setTourEnd('');
       setStep('entry');
     } catch (e: any) {
       setError(e?.response?.data?.detail ?? 'QR-код не распознан');
@@ -105,9 +110,11 @@ const ManualQRScoringPage: React.FC = () => {
         attempt_id: resolved.attempt_id,
         tour_number: resolved.tour_number ?? 1,
         task_scores: taskScoreList,
+        is_captains_task: resolved.is_captains_task,
       };
-      if (tourTime.trim()) {
-        payload.tour_time = tourTime.trim();
+      const computed = computeTourTime(tourStart, tourEnd);
+      if (computed) {
+        payload.tour_time = computed;
       }
       const { data } = await api.post<AttemptResponse>('scans/qr-score-entry', payload);
       setResultAttempt(data);
@@ -121,11 +128,27 @@ const ManualQRScoringPage: React.FC = () => {
     }
   };
 
+  const computeTourTime = (start: string, end: string): string | null => {
+    if (!start || !end) return null;
+    const [sh, sm] = start.split(':').map(Number);
+    const [eh, em] = end.split(':').map(Number);
+    if (isNaN(sh) || isNaN(sm) || isNaN(eh) || isNaN(em)) return null;
+    const startSecs = sh * 3600 + sm * 60;
+    const endSecs = eh * 3600 + em * 60;
+    if (endSecs <= startSecs) return null;
+    const diff = endSecs - startSecs;
+    const h = Math.floor(diff / 3600);
+    const m = Math.floor((diff % 3600) / 60);
+    const s = diff % 60;
+    return `${String(h).padStart(2, '0')}.${String(m).padStart(2, '0')}.${String(s).padStart(2, '0')}`;
+  };
+
   const handleReset = () => {
     setStep('scan');
     setResolved(null);
     setTaskScores({});
-    setTourTime('');
+    setTourStart('');
+    setTourEnd('');
     setResultAttempt(null);
     setError(null);
     setLaserInput('');
@@ -229,17 +252,57 @@ const ManualQRScoringPage: React.FC = () => {
           {/* Step 2: Enter scores */}
           {step === 'entry' && resolved && (
             <div className="card" style={{ padding: 24 }}>
+              {/* Captain task banner */}
+              {resolved.is_captains_task && (
+                <div style={{
+                  background: '#fef3c7',
+                  border: '1px solid #f59e0b',
+                  borderRadius: 8,
+                  padding: '10px 14px',
+                  marginBottom: 12,
+                  fontWeight: 600,
+                  color: '#92400e',
+                  fontSize: 14,
+                }}>
+                  ЗАДАНИЕ КАПИТАНА — баллы идут в командный зачёт
+                </div>
+              )}
+              {/* Team tour banner */}
+              {!resolved.is_captains_task && resolved.tour_mode === 'team' && (
+                <div style={{
+                  background: '#ede9fe',
+                  border: '1px solid #7c3aed',
+                  borderRadius: 8,
+                  padding: '10px 14px',
+                  marginBottom: 12,
+                  fontWeight: 600,
+                  color: '#4c1d95',
+                  fontSize: 14,
+                }}>
+                  КОМАНДНЫЙ ТУР
+                </div>
+              )}
               <div style={{ background: '#f0f9ff', borderRadius: 8, padding: 12, marginBottom: 20 }}>
-                <div style={{ fontWeight: 600, fontSize: 16 }}>{resolved.participant_name}</div>
+                <div style={{ fontWeight: 600, fontSize: 16 }}>
+                  {resolved.tour_mode === 'team'
+                    ? (resolved.institution_name || resolved.participant_name)
+                    : resolved.participant_name}
+                </div>
                 <div style={{ color: '#555', fontSize: 13 }}>{resolved.competition_name}</div>
                 {resolved.tour_number && (
                   <div style={{ color: '#2563eb', fontSize: 13, marginTop: 4 }}>
                     Тур {toRoman(resolved.tour_number)}
+                    {resolved.is_captains_task && resolved.cap_task_number != null
+                      ? ` — Задание капитана №${resolved.cap_task_number}`
+                      : ''}
                   </div>
                 )}
                 {(resolved.institution_name || resolved.position || resolved.military_rank) && (
                   <div style={{ borderTop: '1px solid #dbeafe', marginTop: 8, paddingTop: 8, fontSize: 13, color: '#555' }}>
                     {resolved.institution_name && <div>{resolved.institution_name}{resolved.institution_location ? ` (${resolved.institution_location})` : ''}</div>}
+                    {resolved.tour_mode !== 'team' && resolved.participant_name && resolved.institution_name && (
+                      <div style={{ color: '#374151' }}>{resolved.participant_name}</div>
+                    )}
                     {resolved.position && <div>Должность: {resolved.position}</div>}
                     {resolved.military_rank && <div>Воинское звание: {resolved.military_rank}</div>}
                     {resolved.is_captain && <div style={{ color: '#2563eb', fontWeight: 600 }}>Капитан команды</div>}
@@ -298,23 +361,53 @@ const ManualQRScoringPage: React.FC = () => {
                       </div>
                     ))}
                   </div>
-                  <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <label style={{ minWidth: 80, fontSize: 14 }}>
-                      Время:
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="чч.мм.сс"
-                      value={tourTime}
-                      onChange={(e) => setTourTime(e.target.value)}
-                      style={{
-                        flex: 1,
-                        padding: '8px 12px',
-                        borderRadius: 6,
-                        border: '1px solid #d1d5db',
-                        fontSize: 15,
-                      }}
-                    />
+                  <div style={{ marginTop: 16 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6, color: '#374151' }}>
+                      Время выполнения тура (необязательно):
+                    </div>
+                    <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <label style={{ fontSize: 13, minWidth: 60 }}>Начало:</label>
+                        <input
+                          type="time"
+                          value={tourStart}
+                          onChange={(e) => setTourStart(e.target.value)}
+                          style={{
+                            padding: '6px 10px',
+                            borderRadius: 6,
+                            border: '1px solid #d1d5db',
+                            fontSize: 14,
+                          }}
+                        />
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <label style={{ fontSize: 13, minWidth: 60 }}>Конец:</label>
+                        <input
+                          type="time"
+                          value={tourEnd}
+                          onChange={(e) => setTourEnd(e.target.value)}
+                          style={{
+                            padding: '6px 10px',
+                            borderRadius: 6,
+                            border: '1px solid #d1d5db',
+                            fontSize: 14,
+                          }}
+                        />
+                      </div>
+                    </div>
+                    {tourStart && tourEnd && (() => {
+                      const ct = computeTourTime(tourStart, tourEnd);
+                      if (!ct) return (
+                        <div style={{ fontSize: 12, color: '#dc2626', marginTop: 4 }}>
+                          Время конца должно быть позже начала
+                        </div>
+                      );
+                      return (
+                        <div style={{ fontSize: 12, color: '#15803d', marginTop: 4 }}>
+                          Продолжительность: {ct.replace(/\./g, ':')}
+                        </div>
+                      );
+                    })()}
                   </div>
                   <div
                     style={{
@@ -357,15 +450,28 @@ const ManualQRScoringPage: React.FC = () => {
                   ✓ Баллы сохранены
                 </div>
                 <div style={{ marginTop: 8 }}>
-                  <strong>{resolved.participant_name}</strong>
+                  <strong>
+                    {resolved.tour_mode === 'team'
+                      ? (resolved.institution_name || resolved.participant_name)
+                      : resolved.participant_name}
+                  </strong>
                 </div>
                 <div style={{ color: '#555', fontSize: 13 }}>{resolved.competition_name}</div>
                 {resolved.tour_number && (
-                  <div style={{ fontSize: 13, color: '#555' }}>Тур {toRoman(resolved.tour_number)}</div>
+                  <div style={{ fontSize: 13, color: '#555' }}>
+                    Тур {toRoman(resolved.tour_number)}
+                    {resolved.is_captains_task ? ' — Задание капитана' : ''}
+                  </div>
                 )}
-                <div style={{ marginTop: 8, fontSize: 16, fontWeight: 600 }}>
-                  Итоговый балл: {resultAttempt.score_total ?? '—'}
-                </div>
+                {resolved.is_captains_task ? (
+                  <div style={{ marginTop: 8, fontSize: 13, color: '#92400e' }}>
+                    Баллы записаны в командный зачёт
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 8, fontSize: 16, fontWeight: 600 }}>
+                    Итоговый балл: {resultAttempt.score_total ?? '—'}
+                  </div>
+                )}
               </div>
 
               <div style={{ display: 'flex', gap: 12 }}>

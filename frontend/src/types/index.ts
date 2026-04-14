@@ -188,6 +188,7 @@ export interface ScoringProgressItem {
   tours: ScoringProgressTour[];
   score_total: number | null;
   is_captain: boolean;
+  captains_task_by_tour: Record<number, number>;
 }
 
 export interface TourTimeItem {

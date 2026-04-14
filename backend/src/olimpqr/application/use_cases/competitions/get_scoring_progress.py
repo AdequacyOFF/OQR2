@@ -33,6 +33,7 @@ class ScoringProgressItemResult:
     tours: list[TourProgressResult] = field(default_factory=list)
     score_total: int | None = None
     is_captain: bool = False
+    captains_task_by_tour: dict[int, int] = field(default_factory=dict)  # tour_number → captain bonus score
 
 
 @dataclass
@@ -109,6 +110,17 @@ class GetScoringProgressUseCase:
                         tour_time=tour_time,
                     ))
 
+            captains_task_by_tour: dict[int, int] = {}
+            if attempt and attempt.task_scores:
+                for key, val in attempt.task_scores.items():
+                    if key.startswith("cap_") and isinstance(val, dict):
+                        try:
+                            tour_n = int(key[4:])
+                            cap_total = sum(v for v in val.values() if isinstance(v, int))
+                            captains_task_by_tour[tour_n] = cap_total
+                        except (ValueError, TypeError):
+                            pass
+
             items.append(ScoringProgressItemResult(
                 registration_id=reg.id,
                 participant_id=reg.participant_id,
@@ -120,6 +132,7 @@ class GetScoringProgressUseCase:
                 tours=tour_progress,
                 score_total=attempt.score_total if attempt else None,
                 is_captain=getattr(participant, 'is_captain', False) or False,
+                captains_task_by_tour=captains_task_by_tour,
             ))
 
         return ScoringProgressResult(

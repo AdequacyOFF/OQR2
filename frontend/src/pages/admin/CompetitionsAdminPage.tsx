@@ -120,7 +120,7 @@ const CompetitionsAdminPage: React.FC = () => {
   const [templateUploadingKind, setTemplateUploadingKind] = useState<SpecialTemplateKind | null>(null);
   const [templateDownloadingKind, setTemplateDownloadingKind] = useState<SpecialTemplateKind | null>(null);
   const [templateDeletingKind, setTemplateDeletingKind] = useState<SpecialTemplateKind | null>(null);
-  const [templateInfo, setTemplateInfo] = useState<Record<string, { filename: string; modified_at?: string }>>({});
+  const [templateInfo, setTemplateInfo] = useState<Record<string, { filename: string; display_filename: string; modified_at?: string }>>({});
 
   // Delete / replace participant state
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -691,11 +691,11 @@ const CompetitionsAdminPage: React.FC = () => {
     setBadgeTemplateFile(null);
     setBadgePhotosZipFile(null);
     // Fetch template info
-    api.get<{ templates: { kind: string; filename: string; modified_at?: string }[] }>('admin/special/templates')
+    api.get<{ templates: { kind: string; filename: string; display_filename?: string; modified_at?: string }[] }>('admin/special/templates')
       .then(({ data }) => {
-        const info: Record<string, { filename: string; modified_at?: string }> = {};
+        const info: Record<string, { filename: string; display_filename: string; modified_at?: string }> = {};
         for (const t of data.templates) {
-          info[t.kind] = { filename: t.filename, modified_at: t.modified_at };
+          info[t.kind] = { filename: t.filename, display_filename: t.display_filename ?? 'Нет шаблона', modified_at: t.modified_at };
         }
         setTemplateInfo(info);
       })
@@ -1874,11 +1874,9 @@ const CompetitionsAdminPage: React.FC = () => {
                     <div>
                       <label className="label" style={{ marginBottom: 4, display: 'block' }}>
                         Шаблон бланка задания
-                        {templateInfo.answer_blank && (
-                          <span style={{ fontWeight: 400, fontSize: 11, color: '#6b7280', marginLeft: 8 }}>
-                            ({templateInfo.answer_blank.filename}{templateInfo.answer_blank.modified_at ? `, обновлен: ${new Date(templateInfo.answer_blank.modified_at).toLocaleString('ru-RU')}` : ''})
-                          </span>
-                        )}
+                        <span style={{ fontWeight: 400, fontSize: 11, color: '#6b7280', marginLeft: 8 }}>
+                          ({templateInfo.answer_blank?.display_filename ?? 'Нет шаблона'}{templateInfo.answer_blank?.modified_at ? `, обновлен: ${new Date(templateInfo.answer_blank.modified_at).toLocaleString('ru-RU')}` : ''})
+                        </span>
                       </label>
                       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                         <input
@@ -1914,11 +1912,9 @@ const CompetitionsAdminPage: React.FC = () => {
                     <div>
                       <label className="label" style={{ marginBottom: 4, display: 'block' }}>
                         Шаблон A3-обложки
-                        {templateInfo.a3_cover && (
-                          <span style={{ fontWeight: 400, fontSize: 11, color: '#6b7280', marginLeft: 8 }}>
-                            ({templateInfo.a3_cover.filename}{templateInfo.a3_cover.modified_at ? `, обновлен: ${new Date(templateInfo.a3_cover.modified_at).toLocaleString('ru-RU')}` : ''})
-                          </span>
-                        )}
+                        <span style={{ fontWeight: 400, fontSize: 11, color: '#6b7280', marginLeft: 8 }}>
+                          ({templateInfo.a3_cover?.display_filename ?? 'Нет шаблона'}{templateInfo.a3_cover?.modified_at ? `, обновлен: ${new Date(templateInfo.a3_cover.modified_at).toLocaleString('ru-RU')}` : ''})
+                        </span>
                       </label>
                       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                         <input
@@ -1954,11 +1950,9 @@ const CompetitionsAdminPage: React.FC = () => {
                     <div>
                       <label className="label" style={{ marginBottom: 4, display: 'block' }}>
                         Шаблон бейджа
-                        {templateInfo.badge && (
-                          <span style={{ fontWeight: 400, fontSize: 11, color: '#6b7280', marginLeft: 8 }}>
-                            ({templateInfo.badge.filename}{templateInfo.badge.modified_at ? `, обновлен: ${new Date(templateInfo.badge.modified_at).toLocaleString('ru-RU')}` : ''})
-                          </span>
-                        )}
+                        <span style={{ fontWeight: 400, fontSize: 11, color: '#6b7280', marginLeft: 8 }}>
+                          ({templateInfo.badge?.display_filename ?? 'Нет шаблона'}{templateInfo.badge?.modified_at ? `, обновлен: ${new Date(templateInfo.badge.modified_at).toLocaleString('ru-RU')}` : ''})
+                        </span>
                       </label>
                       <p className="text-muted" style={{ fontSize: 12, marginBottom: 6 }}>
                         Токены бейджа: {'{{QR_IMAGE}}'}, {'{{FIRST_NAME}}'}, {'{{LAST_NAME}}'}, {'{{MIDDLE_NAME}}'}, {'{{ROLE}}'}, {'{{PHOTO}}'}.

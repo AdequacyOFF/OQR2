@@ -37,6 +37,7 @@ from ...utils.qr_utils import (
     normalize_sheet_token,
     extract_attempt_id,
     extract_a3_cover_info,
+    extract_captains_task_info,
     extract_special_tours,
 )
 from ....config import settings
@@ -344,17 +345,26 @@ async def resolve_qr(
     sheet_repo = AnswerSheetRepositoryImpl(db)
     attempt = None
     tour_number: int | None = None
+    is_captains_task: bool = False
+    cap_task_number: int | None = None
 
-    # Try A3-cover format first (includes tour number)
-    cover_info = extract_a3_cover_info(normalized)
-    if cover_info:
-        attempt_id, tour_number = cover_info
+    # Try captains-task format first (most specific)
+    cap_info = extract_captains_task_info(normalized)
+    if cap_info:
+        attempt_id, tour_number, cap_task_number = cap_info
         attempt = await attempt_repo.get_by_id(attempt_id)
+        is_captains_task = True
     else:
-        # Try general direct attempt token
-        direct_id = extract_attempt_id(normalized)
-        if direct_id:
-            attempt = await attempt_repo.get_by_id(direct_id)
+        # Try A3-cover / answer-blank format (includes tour number)
+        cover_info = extract_a3_cover_info(normalized)
+        if cover_info:
+            attempt_id, tour_number = cover_info
+            attempt = await attempt_repo.get_by_id(attempt_id)
+        else:
+            # Try general direct attempt token
+            direct_id = extract_attempt_id(normalized)
+            if direct_id:
+                attempt = await attempt_repo.get_by_id(direct_id)
 
     # Fall back to hashed sheet token
     if not attempt:
@@ -385,12 +395,17 @@ async def resolve_qr(
 
     competition = registration.competition
     task_numbers: list[int] = []
+    tour_mode: str | None = None
     if tour_number is not None:
         tours = extract_special_tours(competition)
         for tour in tours:
             if int(tour["tour_number"]) == tour_number:
                 task_numbers = [int(t) for t in tour["task_numbers"]]
+                tour_mode = tour.get("mode")
                 break
+    # For captains task, show only the specific cap task number as the task
+    if is_captains_task and cap_task_number is not None:
+        task_numbers = [cap_task_number]
 
     participant = registration.participant
     institution_name = None
@@ -424,6 +439,9 @@ async def resolve_qr(
         competition_name=competition.name,
         is_special=bool(competition.is_special),
         task_numbers=task_numbers,
+        tour_mode=tour_mode,
+        is_captains_task=is_captains_task,
+        cap_task_number=cap_task_number,
     )
 
 
@@ -449,7 +467,12 @@ async def qr_score_entry(
     scores_dict: dict[int, int] = {item.task_number: item.score for item in body.task_scores}
 
     try:
-        attempt.apply_task_scores(tour_number=body.tour_number, scores=scores_dict, tour_time=body.tour_time)
+        attempt.apply_task_scores(
+            tour_number=body.tour_number,
+            scores=scores_dict,
+            tour_time=body.tour_time,
+            is_captains_task=body.is_captains_task,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -458,7 +481,7 @@ async def qr_score_entry(
     audit = AuditLog.create_log(
         entity_type="attempt",
         entity_id=attempt.id,
-        action="task_scores_applied",
+        action="captains_task_scores_applied" if body.is_captains_task else "task_scores_applied",
         user_id=current_user.id,
         ip_address=request.client.host if request.client else None,
         tour_number=body.tour_number,

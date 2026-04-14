@@ -166,6 +166,7 @@ class ScoringProgressItem(BaseModel):
     tours: list["TourProgress"] = []
     score_total: Optional[int] = None
     is_captain: bool = False
+    captains_task_by_tour: dict[int, int] = {}
 
 
 class ScoringProgressResponse(BaseModel):
