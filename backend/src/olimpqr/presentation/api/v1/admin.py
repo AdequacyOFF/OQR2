@@ -4152,10 +4152,7 @@ async def admit_all_special_and_download(
     if not competition.is_special:
         raise HTTPException(status_code=400, detail="Операция доступна только для олимпиад с пометкой 'особая'")
 
-    from ....infrastructure.database.models import (
-        RegistrationModel,
-        AnswerSheetModel,
-    )
+    from ....infrastructure.database.models import RegistrationModel
 
     registration_stmt = (
         select(RegistrationModel)
@@ -4219,265 +4216,91 @@ async def admit_all_special_and_download(
                 }
             )
 
-    # 2) Reload registrations to include created attempts.
-    registrations_result = await db.execute(registration_stmt)
-    registrations = registrations_result.scalars().all()
-
-    # 3) Build ZIP archive (DOCX templates + legacy PDFs).
-    storage = MinIOStorage()
-    word_generator = WordTemplateGenerator()
-    template_paths = word_generator.get_template_paths()
-    tours = _extract_special_tours(competition)
-    has_team_tours = any(str(t["mode"]) == "team" for t in tours)
-    zip_buffer = io.BytesIO()
-    added_files = 0
-    mode_labels = {
-        "individual": "Индивидуальный",
-        "individual_captains": "Индивидуальный (капитаны)",
-        "team": "Командный",
+    # 2) Launch async ZIP generation task and return task_id immediately.
+    from ....infrastructure.tasks.badge_tasks import generate_blanks_zip
+    task = generate_blanks_zip.delay(str(competition_id))
+    return {
+        "task_id": task.id,
+        "admitted_now": admitted_now,
+        "admit_errors": admit_errors,
     }
 
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        # Include editable templates in archive for quick customization.
-        try:
-            zf.write(template_paths["answer_blank"], arcname="_templates/special_answer_blank_template.docx")
-            zf.write(template_paths["a3_cover"], arcname="_templates/special_cover_a3_template.docx")
-            added_files += 2
-        except Exception:  # noqa: BLE001
-            pass
 
-        for reg in registrations:
-            participant = reg.participant
-            if not participant:
-                continue
-            if not reg.attempts:
-                continue
 
-            attempt = reg.attempts[0]
-            folder = _slugify_folder_name(f"{participant.full_name}_{participant.id}")
-            # When team tours are present, individual sheets go under "Личный зачет/"
-            individual_root = f"Личный зачет/{folder}" if has_team_tours else folder
+# ══════════════════════════════════════════════════════════════════════════════
+# Blanks ZIP task status / download endpoints
+# ══════════════════════════════════════════════════════════════════════════════
 
-            sheets_stmt = (
-                select(AnswerSheetModel)
-                .where(AnswerSheetModel.attempt_id == attempt.id)
-                .order_by(AnswerSheetModel.created_at.asc())
-            )
-            sheets_result = await db.execute(sheets_stmt)
-            sheets = sheets_result.scalars().all()
+@router.get("/competitions/{competition_id}/blanks-tasks/{task_id}/status")
+async def get_blanks_task_status(
+    competition_id: UUID,
+    task_id: str,
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """Poll the status of a blanks ZIP generation task."""
+    from ....infrastructure.tasks.celery_app import celery_app as _celery
 
-            # Generate DOCX set based on editable Word templates (individual/captains tours only).
-            for tour in tours:
-                tour_number = int(tour["tour_number"])
-                mode = str(tour["mode"])
-                mode_label = mode_labels.get(mode, mode)
-                task_numbers = tour["task_numbers"]
+    result = _celery.AsyncResult(task_id)
+    state = result.state
+    info = result.info or {}
 
-                # Team tours are handled separately after this loop
-                if mode == "team":
-                    continue
+    if state == "SUCCESS":
+        payload = info if isinstance(info, dict) else {}
+        return {
+            "state": "SUCCESS",
+            "status": payload.get("status", "completed"),
+            "added_files": payload.get("added_files"),
+            "object_name": payload.get("object_name"),
+            "errors": payload.get("errors", []),
+        }
+    if state == "FAILURE":
+        return {"state": "FAILURE", "message": str(info)}
+    if state == "PROGRESS" and isinstance(info, dict):
+        return {
+            "state": "PROGRESS",
+            "stage": info.get("stage", ""),
+            "current": info.get("current", 0),
+            "total": info.get("total", 0),
+            "participant": info.get("participant", ""),
+        }
+    return {"state": state}
 
-                cover_qr_payload = f"attempt:{attempt.id}:tour:{tour_number}:cover"
-                try:
-                    cover_docx = word_generator.generate_a3_cover(
-                        qr_payload=cover_qr_payload,
-                        tour_number=tour_number,
-                        mode=mode_label,
-                    )
-                    zf.writestr(f"{individual_root}/tour_{tour_number}/A3_tour_{tour_number}.docx", cover_docx)
-                    added_files += 1
-                except Exception as exc:  # noqa: BLE001
-                    admit_errors.append(
-                        {
-                            "registration_id": str(reg.id),
-                            "participant": participant.full_name,
-                            "error": f"A3 tour {tour_number}: {exc}",
-                        }
-                    )
 
-                for task_number in task_numbers:
-                    task_qr_payload = f"attempt:{attempt.id}:tour:{tour_number}:task:{task_number}"
-                    try:
-                        task_docx = word_generator.generate_answer_blank(
-                            qr_payload=task_qr_payload,
-                            tour_number=tour_number,
-                            task_number=int(task_number),
-                            mode=mode_label,
-                        )
-                        task_folder = f"{individual_root}/tour_{tour_number}/task_{task_number}"
-                        zf.writestr(
-                            f"{task_folder}/task_{task_number}.docx",
-                            task_docx,
-                        )
-                        added_files += 1
-                        for extra_i in range(1, 6):
-                            extra_docx = word_generator.generate_answer_blank(
-                                qr_payload=task_qr_payload,
-                                tour_number=tour_number,
-                                task_number=int(task_number),
-                                mode=mode_label,
-                                tour_task=f"{tour_number}/{task_number}/{extra_i}",
-                            )
-                            zf.writestr(
-                                f"{task_folder}/дополнительные бланки/extra_{extra_i}.docx",
-                                extra_docx,
-                            )
-                            added_files += 1
-                    except Exception as exc:  # noqa: BLE001
-                        admit_errors.append(
-                            {
-                                "registration_id": str(reg.id),
-                                "participant": participant.full_name,
-                                "error": f"Task {tour_number}/{task_number}: {exc}",
-                            }
-                        )
+@router.get("/competitions/{competition_id}/blanks-tasks/{task_id}/download")
+async def download_blanks_task_zip(
+    competition_id: UUID,
+    task_id: str,
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """Download the generated blanks ZIP once the task is complete."""
+    from ....infrastructure.tasks.celery_app import celery_app as _celery
+    from ....infrastructure.tasks.badge_tasks import BLANKS_ZIP_BUCKET
 
-                # Captains tasks: generate blanks only for captains (always in individual folder)
-                if tour.get("captains_task") and participant.is_captain:
-                    cap_task_numbers = tour.get("captains_task_numbers") or [1]
-                    cap_folder = f"{individual_root}/tour_{tour_number}/Задания для капитанов"
-                    for cap_task_num in cap_task_numbers:
-                        cap_qr_payload = f"attempt:{attempt.id}:tour:{tour_number}:captains_task:{cap_task_num}"
-                        try:
-                            cap_docx = word_generator.generate_answer_blank(
-                                qr_payload=cap_qr_payload,
-                                tour_number=tour_number,
-                                task_number=int(cap_task_num),
-                                mode="Задание для капитанов",
-                            )
-                            zf.writestr(f"{cap_folder}/задание_{cap_task_num}.docx", cap_docx)
-                            added_files += 1
-                            for extra_i in range(1, 6):
-                                cap_extra = word_generator.generate_answer_blank(
-                                    qr_payload=cap_qr_payload,
-                                    tour_number=tour_number,
-                                    task_number=int(cap_task_num),
-                                    mode="Задание для капитанов",
-                                    tour_task=f"{tour_number}/cap/{cap_task_num}/{extra_i}",
-                                )
-                                zf.writestr(f"{cap_folder}/дополнительные бланки/extra_{cap_task_num}_{extra_i}.docx", cap_extra)
-                                added_files += 1
-                        except Exception as exc:  # noqa: BLE001
-                            admit_errors.append(
-                                {
-                                    "registration_id": str(reg.id),
-                                    "participant": participant.full_name,
-                                    "error": f"Captains task tour {tour_number}: {exc}",
-                                }
-                            )
+    result = _celery.AsyncResult(task_id)
+    if result.state != "SUCCESS":
+        raise HTTPException(status_code=400, detail=f"Задача ещё не завершена (состояние: {result.state})")
 
-            # Keep existing generated PDFs for backward compatibility with scan flow.
-            if not sheets and attempt.pdf_file_path:
-                try:
-                    pdf_bytes = storage.download_file(
-                        bucket=settings.minio_bucket_sheets,
-                        object_name=attempt.pdf_file_path,
-                    )
-                    legacy_root = f"Личный зачет/{folder}" if has_team_tours else folder
-                    zf.writestr(f"{legacy_root}/legacy/primary.pdf", pdf_bytes)
-                    added_files += 1
-                except Exception:  # noqa: BLE001
-                    pass
-                continue
+    payload = result.result or {}
+    if not isinstance(payload, dict) or payload.get("status") != "completed":
+        message = payload.get("message", "неизвестная ошибка") if isinstance(payload, dict) else str(payload)
+        raise HTTPException(status_code=500, detail=f"Генерация завершилась с ошибкой: {message}")
 
-            for index, sheet in enumerate(sheets, start=1):
-                if not sheet.pdf_file_path:
-                    continue
-                try:
-                    pdf_bytes = storage.download_file(
-                        bucket=settings.minio_bucket_sheets,
-                        object_name=sheet.pdf_file_path,
-                    )
-                    legacy_root = f"Личный зачет/{folder}" if has_team_tours else folder
-                    zf.writestr(f"{legacy_root}/legacy/{index}_{sheet.kind.value}.pdf", pdf_bytes)
-                    added_files += 1
-                except Exception:  # noqa: BLE001
-                    continue
+    object_name = payload.get("object_name")
+    if not object_name:
+        raise HTTPException(status_code=500, detail="Результат задачи не содержит пути к файлу")
 
-        # Generate team tour sheets: one set per institution (captain's attempt only).
-        if has_team_tours:
-            team_tour_list = [t for t in tours if str(t["mode"]) == "team"]
-            # Build mapping: institution_slug → (captain_attempt_id, institution_label)
-            captain_attempts: dict[str, tuple] = {}
-            for reg in registrations:
-                p = reg.participant
-                if not p or not reg.attempts:
-                    continue
-                if not getattr(p, "is_captain", False):
-                    continue
-                inst_name = _derive_team_name(p)
-                inst_slug = _slugify_folder_name(inst_name)
-                if inst_slug not in captain_attempts:
-                    captain_attempts[inst_slug] = (reg.attempts[0].id, inst_name)
+    try:
+        storage = MinIOStorage()
+        zip_bytes = storage.download_file(bucket=BLANKS_ZIP_BUCKET, object_name=object_name)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Не удалось загрузить ZIP из хранилища: {exc}") from exc
 
-            for inst_slug, (cap_attempt_id, inst_label) in captain_attempts.items():
-                team_folder = f"Командный зачет/{inst_slug}"
-                for tour in team_tour_list:
-                    tour_number = int(tour["tour_number"])
-                    mode_label = mode_labels.get(str(tour["mode"]), str(tour["mode"]))
-                    task_numbers = tour["task_numbers"]
-
-                    cover_qr_payload = f"attempt:{cap_attempt_id}:tour:{tour_number}:cover"
-                    try:
-                        cover_docx = word_generator.generate_a3_cover(
-                            qr_payload=cover_qr_payload,
-                            tour_number=tour_number,
-                            mode=mode_label,
-                        )
-                        zf.writestr(f"{team_folder}/tour_{tour_number}/A3_tour_{tour_number}.docx", cover_docx)
-                        added_files += 1
-                    except Exception as exc:  # noqa: BLE001
-                        admit_errors.append(
-                            {
-                                "registration_id": "",
-                                "participant": inst_label,
-                                "error": f"Team A3 tour {tour_number}: {exc}",
-                            }
-                        )
-
-                    for task_number in task_numbers:
-                        task_qr_payload = f"attempt:{cap_attempt_id}:tour:{tour_number}:task:{task_number}"
-                        try:
-                            task_docx = word_generator.generate_answer_blank(
-                                qr_payload=task_qr_payload,
-                                tour_number=tour_number,
-                                task_number=int(task_number),
-                                mode=mode_label,
-                            )
-                            task_folder_path = f"{team_folder}/tour_{tour_number}/task_{task_number}"
-                            zf.writestr(f"{task_folder_path}/task_{task_number}.docx", task_docx)
-                            added_files += 1
-                            for extra_i in range(1, 6):
-                                extra_docx = word_generator.generate_answer_blank(
-                                    qr_payload=task_qr_payload,
-                                    tour_number=tour_number,
-                                    task_number=int(task_number),
-                                    mode=mode_label,
-                                    tour_task=f"{tour_number}/{task_number}/{extra_i}",
-                                )
-                                zf.writestr(
-                                    f"{task_folder_path}/дополнительные бланки/extra_{extra_i}.docx",
-                                    extra_docx,
-                                )
-                                added_files += 1
-                        except Exception as exc:  # noqa: BLE001
-                            admit_errors.append(
-                                {
-                                    "registration_id": "",
-                                    "participant": inst_label,
-                                    "error": f"Team task {tour_number}/{task_number}: {exc}",
-                                }
-                            )
-
-    zip_buffer.seek(0)
-
-    headers = {
-        "Content-Disposition": f'attachment; filename="special_olympiad_{competition_id}.zip"',
-        "X-Admitted-Now": str(admitted_now),
-        "X-Archive-Files": str(added_files),
-        "X-Admit-Errors": json.dumps(admit_errors),
-    }
-    return StreamingResponse(zip_buffer, media_type="application/zip", headers=headers)
+    filename = f"special_olympiad_{competition_id}.zip"
+    return StreamingResponse(
+        io.BytesIO(zip_bytes),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════

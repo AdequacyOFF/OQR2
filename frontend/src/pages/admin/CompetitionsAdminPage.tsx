@@ -104,6 +104,9 @@ const CompetitionsAdminPage: React.FC = () => {
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importing, setImporting] = useState(false);
   const [admitAndDownloadLoading, setAdmitAndDownloadLoading] = useState(false);
+  const [blanksTaskId, setBlanksTaskId] = useState<string | null>(null);
+  const [blanksTaskState, setBlanksTaskState] = useState<string | null>(null);
+  const [blanksTaskProgress, setBlanksTaskProgress] = useState<{ stage: string; current: number; total: number; participant: string } | null>(null);
   const [badgesDownloading, setBadgesDownloading] = useState(false);
   const [badgeTaskId, setBadgeTaskId] = useState<string | null>(null);
   const [badgeTaskState, setBadgeTaskState] = useState<string | null>(null);
@@ -1061,27 +1064,81 @@ const CompetitionsAdminPage: React.FC = () => {
   const handleAdmitAllAndDownload = async () => {
     if (!regCompetition) return;
     setAdmitAndDownloadLoading(true);
+    setBlanksTaskId(null);
+    setBlanksTaskState(null);
+    setBlanksTaskProgress(null);
     setError(null);
     try {
-      const response = await api.post(
+      const res = await api.post<{ task_id: string; admitted_now: number; admit_errors: unknown[] }>(
         `admin/competitions/${regCompetition.id}/special/admit-all-and-download`,
-        {},
-        { responseType: 'blob' }
+        {}
       );
-      const blob = new Blob([response.data], { type: 'application/zip' });
-      downloadBlob(blob, `special_olympiad_${regCompetition.id}.zip`);
+      const taskId = res.data.task_id;
+      setBlanksTaskId(taskId);
+      setBlanksTaskState('PENDING');
 
+      // Reload registrations (participants may have been admitted)
       const regRes = await api.get<{ items: AdminRegistrationItem[]; total: number }>(
         `admin/registrations/${regCompetition.id}`
       );
       setRegItems(regRes.data.items || []);
+
+      // Poll for progress
+      const poll = async () => {
+        try {
+          const status = await api.get<{
+            state: string;
+            stage?: string;
+            current?: number;
+            total?: number;
+            participant?: string;
+            added_files?: number;
+            object_name?: string;
+            errors?: string[];
+            message?: string;
+          }>(`admin/competitions/${regCompetition.id}/blanks-tasks/${taskId}/status`);
+
+          setBlanksTaskState(status.data.state);
+
+          if (status.data.state === 'PROGRESS') {
+            setBlanksTaskProgress({
+              stage: status.data.stage || '',
+              current: status.data.current ?? 0,
+              total: status.data.total ?? 0,
+              participant: status.data.participant || '',
+            });
+            setTimeout(poll, 1500);
+          } else if (status.data.state === 'SUCCESS') {
+            setBlanksTaskProgress(null);
+            setAdmitAndDownloadLoading(false);
+            // Auto-download
+            const dlRes = await api.get(
+              `admin/competitions/${regCompetition.id}/blanks-tasks/${taskId}/download`,
+              { responseType: 'blob' }
+            );
+            downloadBlob(new Blob([dlRes.data], { type: 'application/zip' }), `special_olympiad_${regCompetition.id}.zip`);
+            if (status.data.errors && status.data.errors.length > 0) {
+              setWarning(`Архив готов, но есть предупреждения: ${status.data.errors.slice(0, 3).join('; ')}`);
+            }
+          } else if (status.data.state === 'FAILURE') {
+            setAdmitAndDownloadLoading(false);
+            setError(`Ошибка генерации ZIP: ${status.data.message || 'неизвестная ошибка'}`);
+          } else {
+            // PENDING / STARTED
+            setTimeout(poll, 2000);
+          }
+        } catch {
+          setAdmitAndDownloadLoading(false);
+          setError('Не удалось получить статус задачи генерации архива.');
+        }
+      };
+      setTimeout(poll, 1500);
     } catch (err: unknown) {
+      setAdmitAndDownloadLoading(false);
       const message =
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
-        'Не удалось допустить участников и скачать архив.';
+        'Не удалось допустить участников и запустить генерацию архива.';
       setError(message);
-    } finally {
-      setAdmitAndDownloadLoading(false);
     }
   };
 
@@ -1837,27 +1894,62 @@ const CompetitionsAdminPage: React.FC = () => {
                 </div>
                 {admitAndDownloadLoading && (
                   <div style={{ marginTop: 8, marginBottom: 12 }}>
-                    <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 6 }}>
-                      Генерация бланков для всех участников... Это может занять несколько минут.
-                    </div>
-                    <div style={{ width: '100%', height: 6, background: '#e5e7eb', borderRadius: 3, overflow: 'hidden' }}>
-                      <div
-                        style={{
-                          width: '40%',
-                          height: '100%',
-                          background: 'linear-gradient(90deg, #3b82f6 0%, #60a5fa 50%, #3b82f6 100%)',
-                          borderRadius: 3,
-                          animation: 'admitProgress 1.5s ease-in-out infinite',
-                        }}
-                      />
-                    </div>
-                    <style>{`
-                      @keyframes admitProgress {
-                        0% { margin-left: 0%; width: 40%; }
-                        50% { margin-left: 60%; width: 40%; }
-                        100% { margin-left: 0%; width: 40%; }
-                      }
-                    `}</style>
+                    {blanksTaskProgress && blanksTaskProgress.total > 0 ? (
+                      <>
+                        <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 4 }}>
+                          {blanksTaskProgress.stage === 'generating' && `Генерация бланков: участник ${blanksTaskProgress.current} из ${blanksTaskProgress.total}`}
+                          {blanksTaskProgress.stage === 'team' && `Командные бланки: ${blanksTaskProgress.current} из ${blanksTaskProgress.total}`}
+                          {blanksTaskProgress.stage === 'uploading' && 'Загрузка архива в хранилище...'}
+                          {blanksTaskProgress.stage === 'loading' && 'Загрузка данных...'}
+                          {!['generating','team','uploading','loading'].includes(blanksTaskProgress.stage) && 'Обработка...'}
+                        </div>
+                        {blanksTaskProgress.participant && (
+                          <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {blanksTaskProgress.participant}
+                          </div>
+                        )}
+                        <div style={{ width: '100%', height: 6, background: '#e5e7eb', borderRadius: 3, overflow: 'hidden' }}>
+                          <div
+                            style={{
+                              width: `${Math.round((blanksTaskProgress.current / blanksTaskProgress.total) * 100)}%`,
+                              height: '100%',
+                              background: 'linear-gradient(90deg, #3b82f6, #60a5fa)',
+                              borderRadius: 3,
+                              transition: 'width 0.4s ease',
+                            }}
+                          />
+                        </div>
+                        <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 3 }}>
+                          {Math.round((blanksTaskProgress.current / blanksTaskProgress.total) * 100)}%
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 6 }}>
+                          {blanksTaskState === 'PENDING' || blanksTaskState === 'STARTED'
+                            ? 'Задача поставлена в очередь...'
+                            : 'Генерация бланков для всех участников... Это может занять несколько минут.'}
+                        </div>
+                        <div style={{ width: '100%', height: 6, background: '#e5e7eb', borderRadius: 3, overflow: 'hidden' }}>
+                          <div
+                            style={{
+                              width: '40%',
+                              height: '100%',
+                              background: 'linear-gradient(90deg, #3b82f6 0%, #60a5fa 50%, #3b82f6 100%)',
+                              borderRadius: 3,
+                              animation: 'admitProgress 1.5s ease-in-out infinite',
+                            }}
+                          />
+                        </div>
+                        <style>{`
+                          @keyframes admitProgress {
+                            0% { margin-left: 0%; width: 40%; }
+                            50% { margin-left: 60%; width: 40%; }
+                            100% { margin-left: 0%; width: 40%; }
+                          }
+                        `}</style>
+                      </>
+                    )}
                   </div>
                 )}
                 <p className="text-muted" style={{ fontSize: 12, marginBottom: 12 }}>
