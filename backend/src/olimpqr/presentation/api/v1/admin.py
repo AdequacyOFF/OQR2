@@ -2391,6 +2391,20 @@ async def export_results_table(
         if value is not None:
             cell.number_format = '[h]:mm:ss'
 
+    def _parse_hms(s: str | None):
+        """Convert 'hh.mm.ss' string to timedelta, or None."""
+        if not s:
+            return None
+        parts = s.split(".")
+        if len(parts) != 3:
+            return None
+        try:
+            from datetime import timedelta as _td
+            h, m, sec = int(parts[0]), int(parts[1]), int(parts[2])
+            return _td(hours=h, minutes=m, seconds=sec)
+        except (ValueError, TypeError):
+            return None
+
     # ── Helper: tour rank COUNTIFS formula ─────────────────────────────────
     def _tour_rank_formula(total_cl: str, time_cl: str, data_row: int, row: int) -> str:
         return (
@@ -2453,6 +2467,15 @@ async def export_results_table(
                     captain_bonus[inst][tour_n] = cap_score
                 else:
                     captain_bonus[inst][tour_n] = existing + cap_score
+
+    # Build captain time lookup for team tours: institution_name → tour_number → hh.mm.ss
+    captain_time: dict[str, dict[int, str | None]] = {}
+    for item in result.items:
+        if item.is_captain:
+            inst = item.participant_school or ""
+            for t in item.tours:
+                if any(tc.tour_number == t.tour_number for tc in team_tours) and t.tour_time:
+                    captain_time.setdefault(inst, {})[t.tour_number] = t.tour_time
 
     # Build team tour data: institution_name → tour_number → total_score
     team_tour_data: dict[str, dict[int, int | None]] = {}
@@ -2839,17 +2862,25 @@ async def export_results_table(
                 all_rank_cols.append(get_column_letter(tm["rank_col"]))
                 all_time_cols.append(get_column_letter(tm["time_col"]))
 
-            # Team tours: direct values from DB aggregation
+            # Team tours: direct values + captain task bonus
             for tc in team_tours:
                 tm = team2_col_map[tc.tour_number]
                 team_total_val = team_tour_data.get(inst, {}).get(tc.tour_number)
-                _d(ws2.cell(row=row, column=tm["total_col"]), team_total_val)
+                cap_bonus = captain_bonus.get(inst, {}).get(tc.tour_number) or 0
+                total_with_bonus = (team_total_val or 0) + cap_bonus
+                _d(ws2.cell(row=row, column=tm["total_col"]),
+                   total_with_bonus if (team_total_val is not None or cap_bonus) else None)
 
-                tt = tour_time_map.get(tc.tour_number)
-                time_val = None
-                if tt and tt.duration_minutes is not None:
-                    from datetime import timedelta
-                    time_val = timedelta(minutes=tt.duration_minutes)
+                # Prefer captain's per-participant tour time; fall back to competition-wide map
+                ct_str = captain_time.get(inst, {}).get(tc.tour_number)
+                if ct_str:
+                    time_val = _parse_hms(ct_str)
+                else:
+                    tt = tour_time_map.get(tc.tour_number)
+                    time_val = None
+                    if tt and tt.duration_minutes is not None:
+                        from datetime import timedelta
+                        time_val = timedelta(minutes=tt.duration_minutes)
                 _dt(ws2.cell(row=row, column=tm["time_col"]), time_val)
 
                 total2_cl = get_column_letter(tm["total_col"])

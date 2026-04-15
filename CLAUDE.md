@@ -70,15 +70,19 @@ backend/src/olimpqr/
 │   └── tasks/        # Celery async tasks (ocr_tasks, badge_tasks)
 └── presentation/     # FastAPI API layer
     ├── api/v1/       # Endpoint routers: auth, competitions, admission, scans, results, admin,
-    │                 # institutions, rooms, documents, invigilator, registrations, profiles
+    │                 # institutions, rooms, documents, invigilator, registrations, profiles,
+    │                 # staff_badges (staff badge generation for admitters/scanners/invigilators)
     │                 # Badge endpoints live in admin.py: /competitions/{id}/badge-template,
     │                 # /registrations/{id}/badges-pdf, /registrations/{id}/badges-docx,
     │                 # /special/templates/badge/photos/upload, /special/templates/badge/fonts/upload
     │                 # Results export endpoints in admin.py: /competitions/{id}/scoring-progress/export
     │                 # (scoring progress xlsx), /competitions/{id}/results-table/export
     │                 # (final standings: 2-sheet xlsx with personal + team rankings)
+    │                 # Template management: GET/DELETE /admin/special/templates/{kind}
+    │                 # Results import: POST /admin/competitions/{id}/results-table/import
     ├── dependencies/ # JWT auth + role-based access (require_role factory)
-    └── schemas/      # Pydantic v2 request/response models
+    ├── schemas/      # Pydantic v2 request/response models
+    └── utils/        # Shared helpers: qr_utils.py (token parsing), special_import.py, staff_import.py
 ```
 
 ### Roles
@@ -96,6 +100,16 @@ Four user roles: `ADMIN`, `ADMITTER`, `SCANNER`, `INVIGILATOR`. The `INVIGILATOR
 - **Answer sheets**: Each attempt has a primary `AnswerSheet` (created at admission) and optional extra sheets. Scans link to an `AnswerSheet`, not directly to an `Attempt`.
 - **Seating algorithm** (`AssignSeatUseCase`): spreads participants from the same institution across different rooms; tie-breaks on most free seats; variant = `(seat_number % variants_count) + 1`; idempotent
 - **Badge system**: `BadgeTemplateModel` stores a JSON layout config (width/height, elements array) and optional background image bytes per competition. `BadgePhotoModel` stores participant photos keyed by normalized name/institution. PDF generation runs as a Celery task (`badge_tasks.py`); poll status via `/badge-tasks/{task_id}/status`, download via `/badge-tasks/{task_id}/download`. DOCX generation is synchronous via python-docx and returned as a ZIP.
+- **Special competitions** (`is_special=True`): team/olympiad competitions with multiple tours. Config stored in `special_settings` JSON on the Competition model — key `"tours"` is a list of `{tour_number, mode, task_numbers, captains_task_numbers}`. Tour modes: `"individual"`, `"individual_captains"`, `"team"`. Parse with `extract_special_tours()` in `qr_utils.py`.
+- **QR payload formats** (parsed in `presentation/utils/qr_utils.py`):
+  - Entry token QR: raw HMAC token string
+  - Sheet QR (primary): `attempt:<UUID>` (legacy) or any string containing `attempt:<UUID>`
+  - A3 cover QR: `attempt:<UUID>:tour:<N>:cover`
+  - Answer blank QR: `attempt:<UUID>:tour:<N>:task:<M>`
+  - Captains task QR: `attempt:<UUID>:tour:<N>:captains_task[:<M>]`
+  - Use `normalize_sheet_token()` to strip BOM/quotes/URL wrappers before matching
+- **task_scores structure**: `Attempt.task_scores` is a dict `{tour_number: {task_number: score, ..., "time": "hh.mm.ss"}}`. The `"time"` key stores per-participant tour time and is excluded from score total calculation.
+- **X-Warnings header**: when returning Cyrillic warnings in HTTP headers, use `from urllib.parse import quote; quote(value, safe="")` — HTTP headers must be ASCII-safe (latin-1).
 
 ### Frontend
 
@@ -125,7 +139,7 @@ Rate limiter is auto-disabled when `ENVIRONMENT=test`.
 
 ## Database
 
-PostgreSQL 16 with async driver (asyncpg). Tables: `users`, `participants`, `competitions`, `registrations`, `entry_tokens`, `attempts`, `scans`, `audit_log`, `institutions`, `rooms`, `seat_assignments`, `documents`, `answer_sheets`, `participant_events`, `badge_templates`, `badge_photos`, `user_competition_access`. All enum columns use `values_callable=lambda e: [member.value for member in e]` to map Python enum names (uppercase) to PostgreSQL enum values (lowercase).
+PostgreSQL 16 with async driver (asyncpg). Tables: `users`, `participants`, `competitions`, `registrations`, `entry_tokens`, `attempts`, `scans`, `audit_log`, `institutions`, `rooms`, `seat_assignments`, `documents`, `answer_sheets`, `participant_events`, `badge_templates`, `badge_photos`, `user_competition_access`. `user_competition_access` controls which admitters/scanners/invigilators have access to a specific competition (many-to-many). All enum columns use `values_callable=lambda e: [member.value for member in e]` to map Python enum names (uppercase) to PostgreSQL enum values (lowercase).
 
 Alembic migrations in `backend/alembic/`. Numbered migrations `001–013` plus a few unnumbered revisions; run them in order via `alembic upgrade head`.
 
