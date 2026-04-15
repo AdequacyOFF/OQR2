@@ -397,7 +397,7 @@ const ScoringProgressTable: React.FC<Props> = ({
         <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 6, paddingLeft: 2 }}>
           Сортировка: {sortKeys.map((k, i) => {
             const labels: Record<string, string> = {
-              name: 'ФИО', school: 'Школа', variant: 'Вар.', total: 'Итог',
+              name: 'ФИО', school: 'Учебное заведение', variant: 'Вар.', total: 'Итог',
             };
             const label = k.col.startsWith('tour_')
               ? `Тур ${toRoman(k.col.slice(5))}`
@@ -442,7 +442,7 @@ const ScoringProgressTable: React.FC<Props> = ({
             ) : (
               <>
                 {makeTh('name', 'Участник')}
-                {makeTh('school', 'Школа')}
+                {makeTh('school', 'Учебное заведение')}
               </>
             )}
             {!isTeamMode && makeTh('variant', 'Вар.', { textAlign: 'center' })}
@@ -536,6 +536,11 @@ const ScoringProgressTable: React.FC<Props> = ({
                                   {taskEntries.map(([k, v]) => `${k}:${v}`).join(' ')}
                                 </div>
                               )}
+                              {captainsTaskTours.has(tourNum) && item.captains_task_by_tour?.[tourNum] != null && (
+                                <div style={{ fontSize: 9, fontWeight: 600, color: '#b45309', marginTop: 1 }}>
+                                  К: {item.captains_task_by_tour[tourNum]}
+                                </div>
+                              )}
                             </td>
                           );
                         })}
@@ -610,6 +615,11 @@ const ScoringProgressTable: React.FC<Props> = ({
                           {tour?.tour_time && (
                             <div style={{ fontSize: 9, fontWeight: 400, color: '#6b7280', marginTop: 1 }}>
                               {tour.tour_time}
+                            </div>
+                          )}
+                          {captainsTaskTours.has(tourNum) && item.captains_task_by_tour?.[tourNum] != null && (
+                            <div style={{ fontSize: 10, fontWeight: 600, color: '#b45309', marginTop: 1 }}>
+                              К: {item.captains_task_by_tour[tourNum]}
                             </div>
                           )}
                         </td>

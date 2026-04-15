@@ -100,6 +100,7 @@ class ResolveQRResponse(BaseModel):
     tour_mode: Optional[str] = Field(None, description="Tour mode: individual / individual_captains / team")
     is_captains_task: bool = Field(False, description="True when QR encodes a captains task blank")
     cap_task_number: Optional[int] = Field(None, description="Captain task number (when is_captains_task=True)")
+    captains_task_numbers: list[int] = Field(default_factory=list, description="Captain task numbers for this tour (when tour_mode=individual_captains)")
 
 
 class TaskScoreItem(BaseModel):

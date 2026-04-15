@@ -330,7 +330,7 @@ const AdmissionPage: React.FC = () => {
                 <td>{verifyData.participant_name}</td>
               </tr>
               <tr>
-                <td><strong>Школа</strong></td>
+                <td><strong>Учебное заведение</strong></td>
                 <td>{verifyData.participant_school}</td>
               </tr>
               {verifyData.institution_name && (

@@ -1957,18 +1957,31 @@ async def export_scoring_progress_excel(
         fixed_cols = ["ВУЗ", "ФИО", "Капитан", "Вариант"]
         n_fixed = len(fixed_cols)
 
-        # Per tour: task columns + итог тура + время тура
+        # Per tour: task columns + [captain task columns] + итог тура + время тура
         tour_col_spans: list[tuple[int, int]] = []  # (start_col_1based, count)
         tour_time_col_map: dict[int, int] = {}  # tour_number -> 1-based column index
+        # captain task columns: tour_number -> list of (cap_task_num, col_index)
+        cap_task_col_map: dict[int, list[tuple[int, int]]] = {}
+        cap_task_total_col_map: dict[int, int] = {}  # tour_number -> total cap score column index
         col_headers: list[str] = list(fixed_cols)
         for tc in tour_configs:
             start = len(col_headers) + 1
             for task_num in tc.task_numbers:
                 col_headers.append(f"Задание {task_num}")
+            if tc.captains_task and tc.captains_task_numbers:
+                cap_cols: list[tuple[int, int]] = []
+                for cap_num in tc.captains_task_numbers:
+                    col_idx = len(col_headers) + 1
+                    col_headers.append(f"К. задание {cap_num}")
+                    cap_cols.append((cap_num, col_idx))
+                cap_task_col_map[tc.tour_number] = cap_cols
+                cap_task_total_col_map[tc.tour_number] = len(col_headers) + 1
+                col_headers.append("Итог к.з.")
             col_headers.append("Итог тура")
             tour_time_col_map[tc.tour_number] = len(col_headers) + 1
             col_headers.append("Время тура")
-            span = len(tc.task_numbers) + 2
+            n_cap_cols = (len(tc.captains_task_numbers) + 1) if (tc.captains_task and tc.captains_task_numbers) else 0
+            span = len(tc.task_numbers) + 2 + n_cap_cols
             tour_col_spans.append((start, span))
         col_headers.append("ИТОГО")
         total_cols = len(col_headers)
@@ -2033,6 +2046,11 @@ async def export_scoring_progress_excel(
                         row_data.append(tour.task_scores.get(str(task_num)))
                     else:
                         row_data.append(None)
+                if tc.captains_task and tc.captains_task_numbers:
+                    cap_scores = item.captains_task_scores_by_tour.get(tc.tour_number, {})
+                    for cap_num in tc.captains_task_numbers:
+                        row_data.append(cap_scores.get(str(cap_num)))
+                    row_data.append(item.captains_task_by_tour.get(tc.tour_number))
                 row_data.append(tour.tour_total if tour else None)
                 row_data.append(None)  # time placeholder — written below with number_format
             row_data.append(item.score_total)
@@ -2321,7 +2339,10 @@ async def export_results_table(
         .where(TourTimeModel.competition_id == competition_id)
         .order_by(TourTimeModel.tour_number)
     )
-    tour_time_map = {row.tour_number: row for row in tt_result.scalars().all()}
+    tour_time_map = {
+        row.tour_number: _compute_tour_time_item(row)
+        for row in tt_result.scalars().all()
+    }
 
     # Fetch participant grades (not included in use case output)
     from ....infrastructure.database.models import ParticipantModel

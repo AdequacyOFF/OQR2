@@ -29,6 +29,7 @@ interface ResolveQRResponse {
   tour_mode: string | null;
   is_captains_task: boolean;
   cap_task_number: number | null;
+  captains_task_numbers: number[];
 }
 
 interface AttemptResponse {
@@ -50,6 +51,7 @@ const ManualQRScoringPage: React.FC = () => {
 
   const [resolved, setResolved] = useState<ResolveQRResponse | null>(null);
   const [taskScores, setTaskScores] = useState<Record<number, string>>({});
+  const [captainTaskScores, setCaptainTaskScores] = useState<Record<number, string>>({});
   const [tourStart, setTourStart] = useState('');
   const [tourEnd, setTourEnd] = useState('');
   const [resultAttempt, setResultAttempt] = useState<AttemptResponse | null>(null);
@@ -78,6 +80,10 @@ const ManualQRScoringPage: React.FC = () => {
       const initial: Record<number, string> = {};
       for (const t of data.task_numbers) initial[t] = '';
       setTaskScores(initial);
+      // Initialize captain task scores if captain in individual_captains tour
+      const initCap: Record<number, string> = {};
+      for (const n of data.captains_task_numbers ?? []) initCap[n] = '';
+      setCaptainTaskScores(initCap);
       setTourStart('');
       setTourEnd('');
       setStep('entry');
@@ -117,6 +123,22 @@ const ManualQRScoringPage: React.FC = () => {
         payload.tour_time = computed;
       }
       const { data } = await api.post<AttemptResponse>('scans/qr-score-entry', payload);
+
+      // If captain in individual_captains tour and captain task scores were entered, submit them too
+      const capEntries = Object.entries(captainTaskScores).filter(([, v]) => v !== '');
+      if (!resolved.is_captains_task && capEntries.length > 0) {
+        const capPayload = {
+          attempt_id: resolved.attempt_id,
+          tour_number: resolved.tour_number ?? 1,
+          task_scores: capEntries.map(([task, score]) => ({
+            task_number: parseInt(task),
+            score: parseInt(score) || 0,
+          })),
+          is_captains_task: true,
+        };
+        await api.post<AttemptResponse>('scans/qr-score-entry', capPayload);
+      }
+
       setResultAttempt(data);
       setLastAttemptId(data.id);
       setRefreshTrigger((n) => n + 1);
@@ -147,6 +169,7 @@ const ManualQRScoringPage: React.FC = () => {
     setStep('scan');
     setResolved(null);
     setTaskScores({});
+    setCaptainTaskScores({});
     setTourStart('');
     setTourEnd('');
     setResultAttempt(null);
@@ -256,15 +279,20 @@ const ManualQRScoringPage: React.FC = () => {
               {resolved.is_captains_task && (
                 <div style={{
                   background: '#fef3c7',
-                  border: '1px solid #f59e0b',
+                  border: '2px solid #f59e0b',
                   borderRadius: 8,
-                  padding: '10px 14px',
+                  padding: '12px 16px',
                   marginBottom: 12,
-                  fontWeight: 600,
+                  fontWeight: 700,
                   color: '#92400e',
-                  fontSize: 14,
+                  fontSize: 15,
+                  textAlign: 'center',
+                  letterSpacing: '0.02em',
                 }}>
-                  ЗАДАНИЕ КАПИТАНА — баллы идут в командный зачёт
+                  ★ БЛАНК ЗАДАНИЯ КАПИТАНА ★
+                  <div style={{ fontSize: 12, fontWeight: 400, marginTop: 4 }}>
+                    Баллы записываются в командный зачёт
+                  </div>
                 </div>
               )}
               {/* Team tour banner */}
@@ -420,6 +448,49 @@ const ManualQRScoringPage: React.FC = () => {
                   >
                     Сумма: {totalScore}
                   </div>
+
+                  {/* Captain task score inputs (for captains in individual_captains tours) */}
+                  {!resolved.is_captains_task && resolved.is_captain && (resolved.captains_task_numbers?.length ?? 0) > 0 && (
+                    <div style={{
+                      marginTop: 20,
+                      borderTop: '2px solid #f59e0b',
+                      paddingTop: 16,
+                    }}>
+                      <div style={{
+                        fontWeight: 700,
+                        color: '#92400e',
+                        fontSize: 14,
+                        marginBottom: 10,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                      }}>
+                        ★ Задание капитана (командный зачёт)
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                        {resolved.captains_task_numbers.map((n) => (
+                          <div key={n} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                            <label style={{ minWidth: 80, fontSize: 14 }}>Задание {n}:</label>
+                            <input
+                              type="number"
+                              min="0"
+                              value={captainTaskScores[n] ?? ''}
+                              onChange={(e) =>
+                                setCaptainTaskScores((prev) => ({ ...prev, [n]: e.target.value }))
+                              }
+                              style={{
+                                flex: 1,
+                                padding: '8px 12px',
+                                borderRadius: 6,
+                                border: '1px solid #f59e0b',
+                                fontSize: 15,
+                              }}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 

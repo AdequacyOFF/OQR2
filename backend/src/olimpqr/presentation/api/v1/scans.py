@@ -396,12 +396,15 @@ async def resolve_qr(
     competition = registration.competition
     task_numbers: list[int] = []
     tour_mode: str | None = None
+    captains_task_numbers: list[int] = []
     if tour_number is not None:
         tours = extract_special_tours(competition)
         for tour in tours:
             if int(tour["tour_number"]) == tour_number:
                 task_numbers = [int(t) for t in tour["task_numbers"]]
                 tour_mode = tour.get("mode")
+                if tour.get("captains_task"):
+                    captains_task_numbers = [int(n) for n in (tour.get("captains_task_numbers") or [])]
                 break
     # For captains task, show only the specific cap task number as the task
     if is_captains_task and cap_task_number is not None:
@@ -442,6 +445,7 @@ async def resolve_qr(
         tour_mode=tour_mode,
         is_captains_task=is_captains_task,
         cap_task_number=cap_task_number,
+        captains_task_numbers=captains_task_numbers,
     )
 
 

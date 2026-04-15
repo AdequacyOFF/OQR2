@@ -2267,7 +2267,7 @@ const CompetitionsAdminPage: React.FC = () => {
                   <thead>
                     <tr>
                       <th>ФИО</th>
-                      <th>Школа</th>
+                      <th>Учебное заведение</th>
                       <th>Город/филиал</th>
                       <th>Капитан</th>
                       <th>Учреждение</th>

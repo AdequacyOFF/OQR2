@@ -48,7 +48,7 @@ const ResultsPage: React.FC = () => {
               <tr>
                 <th>Место</th>
                 <th>ФИО</th>
-                <th>Школа</th>
+                <th>Учебное заведение</th>
                 <th>Класс</th>
                 <th>Балл</th>
                 <th>Макс. балл</th>
