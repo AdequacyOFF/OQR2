@@ -2714,14 +2714,14 @@ async def export_results_table(
 
         tour2_col_map: dict[int, dict] = {}
 
-        # Individual tour columns in sheet 2: total(SUMIF), time(SUMIF), rank
+        # Individual tour columns in sheet 2: bonus(if captains), total(SUMIF), time(SUMIF), rank
         for tc in individual_tours:
-            total2_col = ci2; ci2 += 1
-            time2_col = ci2; ci2 += 1
-            rank2_col = ci2; ci2 += 1
             bonus_col = None
             if tc.mode == "individual_captains":
                 bonus_col = ci2; ci2 += 1
+            total2_col = ci2; ci2 += 1
+            time2_col = ci2; ci2 += 1
+            rank2_col = ci2; ci2 += 1
             tour2_col_map[tc.tour_number] = {
                 "total_col": total2_col,
                 "time_col": time2_col,
@@ -2770,17 +2770,17 @@ async def export_results_table(
         # Group headers (row 5) and column headers (row 6) for individual tours
         for tc in individual_tours:
             tm = tour2_col_map[tc.tour_number]
-            span_start = tm["total_col"]
-            span_end = tm["bonus_col"] if tm["bonus_col"] else tm["rank_col"]
+            span_start = tm["bonus_col"] if tm["bonus_col"] else tm["total_col"]
+            span_end = tm["rank_col"]
             ws2.merge_cells(start_row=5, start_column=span_start, end_row=5, end_column=span_end)
             _h(ws2.cell(row=5, column=span_start), f"Тур {arabic_to_roman(tc.tour_number)}", fill=tour_fill)
             _fill_row_range(ws2, 5, span_start + 1, span_end, tour_fill, border)
 
+            if tm["bonus_col"]:
+                _h(ws2.cell(row=6, column=tm["bonus_col"]), "Доп. задание (капитан)")
             _h(ws2.cell(row=6, column=tm["total_col"]), "Итого баллов")
             _h(ws2.cell(row=6, column=tm["time_col"]), "Время выполнения")
             _h(ws2.cell(row=6, column=tm["rank_col"]), "Место")
-            if tm["bonus_col"]:
-                _h(ws2.cell(row=6, column=tm["bonus_col"]), "Доп. задание (капитан)")
 
         for tc in team_tours:
             tm = team2_col_map[tc.tour_number]
