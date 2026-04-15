@@ -20,6 +20,7 @@ import ScansPage from '../pages/scanner/ScansPage';
 import ScanDetailPage from '../pages/scanner/ScanDetailPage';
 import ManualQRScoringPage from '../pages/scanner/ManualQRScoringPage';
 import ScannerResultsPage from '../pages/scanner/ScannerResultsPage';
+import QRLookupPage from '../pages/scanner/QRLookupPage';
 
 // Admin pages
 import AdminDashboardPage from '../pages/admin/AdminDashboardPage';
@@ -159,6 +160,14 @@ const AppRouter: React.FC = () => {
           element={
             <ProtectedRoute allowedRoles={['scanner', 'admin']}>
               <ScannerResultsPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/scanner/qr-lookup"
+          element={
+            <ProtectedRoute allowedRoles={['scanner', 'admin']}>
+              <QRLookupPage />
             </ProtectedRoute>
           }
         />

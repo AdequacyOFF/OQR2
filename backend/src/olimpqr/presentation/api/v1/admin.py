@@ -1681,6 +1681,7 @@ async def admit_and_download_single(
                         badge_template.config_json or {},
                         participant_data,
                         badge_template.background_image_bytes,
+                        on_a4=True,
                     )
                     zf.writestr(f"{folder}/badge.pdf", badge_pdf)
                 else:

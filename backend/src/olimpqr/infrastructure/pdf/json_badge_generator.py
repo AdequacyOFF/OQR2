@@ -175,6 +175,7 @@ class JsonBadgeGenerator:
         config: dict[str, Any],
         participant_data: dict[str, Any],
         background_bytes: bytes | None = None,
+        on_a4: bool = False,
     ) -> bytes:
         """Render one badge PDF page.
 
@@ -183,9 +184,12 @@ class JsonBadgeGenerator:
             participant_data: Keys: LAST_NAME, FIRST_NAME, MIDDLE_NAME, ROLE,
                               QR_PAYLOAD, PHOTO_BYTES, COMPETITION_NAME, INSTITUTION_NAME
             background_bytes: Raw bytes of background image, or None
+            on_a4: If True the badge is centered on an A4 page instead of
+                   using a badge-sized canvas. Use for single-participant
+                   print-ready output.
 
         Returns:
-            PDF as bytes (single page, badge-sized)
+            PDF as bytes (single page)
         """
         _register_system_fonts()
         _register_custom_fonts(self.fonts_dir)
@@ -196,7 +200,17 @@ class JsonBadgeGenerator:
         badge_h = height_mm * mm
 
         buf = io.BytesIO()
-        c = rl_canvas.Canvas(buf, pagesize=(badge_w, badge_h))
+
+        if on_a4:
+            from reportlab.lib.pagesizes import A4
+            page_w, page_h = A4
+            x_offset = (page_w - badge_w) / 2
+            y_offset = (page_h - badge_h) / 2
+            c = rl_canvas.Canvas(buf, pagesize=A4)
+            c.saveState()
+            c.translate(x_offset, y_offset)
+        else:
+            c = rl_canvas.Canvas(buf, pagesize=(badge_w, badge_h))
 
         # Background image
         if background_bytes:
@@ -213,6 +227,9 @@ class JsonBadgeGenerator:
 
         for elem in config.get("elements", []):
             self._draw_element(c, elem, participant_data, badge_h)
+
+        if on_a4:
+            c.restoreState()
 
         c.save()
         buf.seek(0)

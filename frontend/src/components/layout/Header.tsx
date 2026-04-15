@@ -33,6 +33,7 @@ const Header: React.FC = () => {
             <Link to="/scans">Сканы</Link>
             <Link to="/scanner/qr-score">Ввод баллов</Link>
             <Link to="/scanner/results">Таблица результатов</Link>
+            <Link to="/scanner/qr-lookup">Проверка QR</Link>
           </>
         );
       case 'invigilator':
