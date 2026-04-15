@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import api from '../../api/client';
 import Layout from '../../components/layout/Layout';
 import Button from '../../components/common/Button';
 import ScoringProgressTable from '../../components/ScoringProgressTable';
-import type { Competition } from '../../types';
+import ResultsTableView from '../../components/ResultsTableView';
+import type { Competition, ScoringProgressResponse } from '../../types';
 
 const ScannerResultsPage: React.FC = () => {
   const [competitions, setCompetitions] = useState<Competition[]>([]);
@@ -14,6 +15,11 @@ const ScannerResultsPage: React.FC = () => {
   const [resultsTableLoading, setResultsTableLoading] = useState(false);
   const [importLoading, setImportLoading] = useState(false);
   const [importResult, setImportResult] = useState<{ updated: number; skipped: string[] } | null>(null);
+
+  // View mode: 'progress' = existing scoring table, 'results' = final standings
+  const [viewMode, setViewMode] = useState<'progress' | 'results'>('progress');
+  const [resultsData, setResultsData] = useState<ScoringProgressResponse | null>(null);
+  const [resultsLoading, setResultsLoading] = useState(false);
 
   const selectedCompetition = competitions.find((c) => c.id === selectedId) ?? null;
 
@@ -32,6 +38,33 @@ const ScannerResultsPage: React.FC = () => {
     };
     load();
   }, []);
+
+  const fetchResultsData = useCallback(async () => {
+    if (!selectedId) return;
+    setResultsLoading(true);
+    try {
+      const res = await api.get<ScoringProgressResponse>(
+        `admin/competitions/${selectedId}/scoring-progress`,
+      );
+      setResultsData(res.data);
+    } catch {
+      setResultsData(null);
+    } finally {
+      setResultsLoading(false);
+    }
+  }, [selectedId]);
+
+  // Fetch results data whenever switching to results view or changing competition in that mode
+  useEffect(() => {
+    if (viewMode === 'results' && selectedId) {
+      void fetchResultsData();
+    }
+  }, [viewMode, selectedId, fetchResultsData]);
+
+  // Reset results data when competition changes
+  useEffect(() => {
+    setResultsData(null);
+  }, [selectedId]);
 
   const handleExport = async () => {
     if (!selectedId) return;
@@ -149,8 +182,8 @@ const ScannerResultsPage: React.FC = () => {
 
         {selectedId && (
           <>
-            {/* Results table */}
             <div className="card" style={{ padding: 16 }}>
+              {/* Toolbar */}
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
                 <Button
                   onClick={handleImportResultsTable}
@@ -175,6 +208,7 @@ const ScannerResultsPage: React.FC = () => {
                   Экспорт в Excel
                 </Button>
               </div>
+
               {importResult && (
                 <div style={{ marginBottom: 12, padding: '8px 12px', background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 6, fontSize: 13 }}>
                   Импортировано: {importResult.updated} участник(ов).
@@ -185,10 +219,61 @@ const ScannerResultsPage: React.FC = () => {
                   )}
                 </div>
               )}
-              <ScoringProgressTable
-                competitionId={selectedId}
-                refreshTrigger={refreshTrigger}
-              />
+
+              {/* View-mode tabs */}
+              <div style={{ display: 'flex', borderBottom: '2px solid #e5e7eb', marginBottom: 16 }}>
+                {(['progress', 'results'] as const).map((mode) => {
+                  const active = viewMode === mode;
+                  return (
+                    <button
+                      key={mode}
+                      onClick={() => setViewMode(mode)}
+                      style={{
+                        padding: '8px 20px',
+                        border: 'none',
+                        borderBottom: active ? '2px solid #2563eb' : '2px solid transparent',
+                        marginBottom: -2,
+                        background: 'none',
+                        cursor: 'pointer',
+                        fontWeight: active ? 700 : 400,
+                        color: active ? '#2563eb' : '#6b7280',
+                        fontSize: 14,
+                      }}
+                    >
+                      {mode === 'progress' ? 'Прогресс' : 'Итоговая таблица'}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Content */}
+              {viewMode === 'progress' && (
+                <ScoringProgressTable
+                  competitionId={selectedId}
+                  refreshTrigger={refreshTrigger}
+                />
+              )}
+
+              {viewMode === 'results' && (
+                resultsLoading ? (
+                  <div style={{ padding: 32, textAlign: 'center', color: '#9ca3af', fontSize: 14 }}>
+                    Загрузка…
+                  </div>
+                ) : resultsData ? (
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+                      <Button onClick={() => { void fetchResultsData(); }} loading={resultsLoading} variant="secondary">
+                        Обновить
+                      </Button>
+                    </div>
+                    <ResultsTableView data={resultsData} />
+                  </div>
+                ) : (
+                  <div style={{ padding: 32, textAlign: 'center', color: '#9ca3af', fontSize: 14 }}>
+                    Нет данных
+                  </div>
+                )
+              )}
             </div>
           </>
         )}
