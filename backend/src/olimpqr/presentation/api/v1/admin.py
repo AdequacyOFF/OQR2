@@ -157,6 +157,15 @@ def _slugify_folder_name(value: str) -> str:
     return safe[:80] or "participant"
 
 
+def _derive_team_name(participant) -> str:
+    """Derive team display name, appending city/location when set."""
+    inst = getattr(participant, "institution", None)
+    location = (getattr(participant, "institution_location", None) or "").strip()
+    if inst:
+        return f"{inst.name} ({location})" if location else inst.name
+    return (getattr(participant, "school", None) or "").strip() or "Команда"
+
+
 def _split_full_name(full_name: str) -> tuple[str, str, str]:
     parts = [part for part in re.split(r"\s+", (full_name or "").strip()) if part]
     if not parts:
@@ -585,8 +594,9 @@ def _project_team_seating_for_merges(
                 continue
             institution_id = seat.get("institution_id")
             institution_name = (seat.get("institution_name") or "").strip()
+            institution_location_val = (seat.get("institution_location") or "").strip().lower()
             if institution_id:
-                team_key = f"id:{institution_id}"
+                team_key = f"id:{institution_id}:{institution_location_val}" if institution_location_val else f"id:{institution_id}"
             elif institution_name:
                 team_key = f"name:{institution_name.lower()}"
             else:
@@ -1557,7 +1567,7 @@ async def admit_and_download_single(
                 "team": "Командный",
             }
             is_captain = getattr(participant, "is_captain", False)
-            institution_name_for_team = participant.institution.name if participant.institution else (participant.school or "Команда")
+            institution_name_for_team = _derive_team_name(participant)
             team_folder = f"Командный зачет/{_slugify_folder_name(institution_name_for_team)}"
 
             for tour in tours:
@@ -4065,6 +4075,7 @@ async def import_special_participants(
             elif user.role != UserRole.PARTICIPANT:
                 raise ValueError(f"Email {email} уже занят пользователем с ролью {user.role.value}")
 
+            team_name = f"{institution_name} ({institution_location})" if institution_location else institution_name
             participant = await participant_repo.get_by_user_id(user.id)
             if participant is None:
                 participant = await participant_repo.create(
@@ -4072,7 +4083,7 @@ async def import_special_participants(
                         id=uuid4(),
                         user_id=user.id,
                         full_name=full_name,
-                        school=institution_name,
+                        school=team_name,
                         grade=None,
                         institution_id=institution.id,
                         institution_location=institution_location,
@@ -4091,7 +4102,7 @@ async def import_special_participants(
             else:
                 participant.update_profile(
                     full_name=full_name,
-                    school=institution_name,
+                    school=team_name,
                     institution_location=institution_location,
                     is_captain=is_captain,
                     dob=dob,
@@ -4394,7 +4405,7 @@ async def admit_all_special_and_download(
                     continue
                 if not getattr(p, "is_captain", False):
                     continue
-                inst_name = p.institution.name if getattr(p, "institution", None) else (p.school or "Команда")
+                inst_name = _derive_team_name(p)
                 inst_slug = _slugify_folder_name(inst_name)
                 if inst_slug not in captain_attempts:
                     captain_attempts[inst_slug] = (reg.attempts[0].id, inst_name)

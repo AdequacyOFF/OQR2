@@ -79,7 +79,10 @@
       "Bash(grep -n \"TourTime\\\\|team_sheet\\\\|is_team\\\\|institution_id\" D:/Projects/Kafedra/OQR2/backend/src/olimpqr/infrastructure/database/models/*.py)",
       "Bash(grep -n \"original_filename\\\\|file_path\" /d/Projects/Kafedra/OQR2/backend/src/olimpqr/application/use_cases/documents/*.py)",
       "Bash(grep -i \"\\\\.tsx$\")",
-      "Bash(grep -E \"\\\\.\\(tsx?|jsx?\\)$\")"
+      "Bash(grep -E \"\\\\.\\(tsx?|jsx?\\)$\")",
+      "Bash(grep -E \"\\\\.\\(tsx|ts|jsx|js\\)$\")",
+      "Bash(grep -E \"\\\\.\\(py|sql\\)$\")",
+      "Bash(grep -E \"\\\\.py$\")"
     ],
     "deny": [],
     "ask": []
