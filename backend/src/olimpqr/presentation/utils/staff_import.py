@@ -97,8 +97,12 @@ def parse_rukovoditeli_xlsx(file_bytes: bytes) -> list[dict[str, Any]] | None:
                 continue
 
             full_name = cell_e.strip()
-            abbrev = _abbreviate(current_institution) if current_institution else ""
-            role = f"ПРЕДСТАВИТЕЛЬ {abbrev}" if abbrev else "ПРЕДСТАВИТЕЛЬ"
+            if current_institution and current_city:
+                role = f"РУКОВОДИТЕЛЬ КОМАНДЫ\n({current_institution} г.{current_city})"
+            elif current_institution:
+                role = f"РУКОВОДИТЕЛЬ КОМАНДЫ\n({current_institution})"
+            else:
+                role = "РУКОВОДИТЕЛЬ КОМАНДЫ"
 
             result.append({
                 "full_name": full_name,

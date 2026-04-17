@@ -39,6 +39,8 @@ const StaffBadgesPage: React.FC = () => {
   // Import
   const [importing, setImporting] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [staffTaskProgress, setStaffTaskProgress] = useState<{ stage: string; current: number; total: number } | null>(null);
+  const staffTaskPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const jsonFileRef = useRef<HTMLInputElement>(null);
   const xlsxFileRef = useRef<HTMLInputElement>(null);
@@ -47,6 +49,9 @@ const StaffBadgesPage: React.FC = () => {
 
   useEffect(() => {
     loadCompetitions();
+    return () => {
+      if (staffTaskPollRef.current) clearInterval(staffTaskPollRef.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -176,36 +181,80 @@ const StaffBadgesPage: React.FC = () => {
     }
   };
 
+  const _stopStaffPoll = () => {
+    if (staffTaskPollRef.current) {
+      clearInterval(staffTaskPollRef.current);
+      staffTaskPollRef.current = null;
+    }
+  };
+
   const handleGeneratePdf = async () => {
+    if (!selectedCompetitionId) {
+      setError('Выберите олимпиаду для генерации PDF');
+      return;
+    }
     setGenerating(true);
+    setStaffTaskProgress(null);
     setError(null);
     try {
-      const body: Record<string, any> = {};
-      if (selectedCompetitionId) body.competition_id = selectedCompetitionId;
+      const { data } = await api.post<{ task_id: string }>(
+        'admin/staff-badges/generate-pdf/start',
+        { competition_id: selectedCompetitionId },
+      );
+      const taskId = data.task_id;
 
-      const response = await api.post('admin/staff-badges/generate-pdf', body, {
-        responseType: 'blob',
-      });
-      const url = URL.createObjectURL(response.data as Blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'staff_badges.pdf';
-      a.click();
-      URL.revokeObjectURL(url);
-      setSuccess('PDF сгенерирован');
-    } catch (err: any) {
-      let detail = 'Ошибка генерации PDF';
-      if (err?.response?.data instanceof Blob) {
+      _stopStaffPoll();
+      staffTaskPollRef.current = setInterval(async () => {
         try {
-          const text = await (err.response.data as Blob).text();
-          const parsed = JSON.parse(text);
-          detail = parsed.detail || detail;
-        } catch { /* ignore */ }
-      } else {
-        detail = err?.response?.data?.detail || detail;
-      }
-      setError(detail);
-    } finally {
+          const { data: status } = await api.get<{
+            state: string;
+            stage?: string;
+            current?: number;
+            total?: number;
+            object_name?: string;
+            message?: string;
+          }>(`admin/badge-tasks/${taskId}/status`);
+
+          if (status.state === 'PROGRESS') {
+            setStaffTaskProgress({
+              stage: status.stage || '',
+              current: status.current ?? 0,
+              total: status.total ?? 0,
+            });
+          }
+
+          if (status.state === 'SUCCESS') {
+            _stopStaffPoll();
+            try {
+              const response = await api.get(`admin/badge-tasks/${taskId}/download`, {
+                responseType: 'blob',
+              });
+              const url = URL.createObjectURL(response.data as Blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = 'staff_badges.pdf';
+              a.click();
+              URL.revokeObjectURL(url);
+              setSuccess('PDF сгенерирован');
+            } catch {
+              setError('Не удалось скачать PDF');
+            }
+            setGenerating(false);
+            setStaffTaskProgress(null);
+          }
+
+          if (status.state === 'FAILURE') {
+            _stopStaffPoll();
+            setError(status.message || 'Ошибка генерации PDF');
+            setGenerating(false);
+            setStaffTaskProgress(null);
+          }
+        } catch {
+          // polling errors are transient, keep polling
+        }
+      }, 5000);
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || 'Ошибка запуска генерации PDF');
       setGenerating(false);
     }
   };
@@ -263,6 +312,20 @@ const StaffBadgesPage: React.FC = () => {
           <Button onClick={handleGeneratePdf} loading={generating} disabled={badges.length === 0 || generating}>
             Сгенерировать PDF
           </Button>
+          {generating && !staffTaskProgress && (
+            <span style={{ fontSize: 13, color: 'var(--text-muted, #666)', alignSelf: 'center' }}>
+              В очереди…
+            </span>
+          )}
+          {generating && staffTaskProgress && (
+            <span style={{ fontSize: 13, color: 'var(--text-muted, #666)', alignSelf: 'center' }}>
+              {({
+                loading: 'Загрузка данных…',
+                generating: `Генерация: ${staffTaskProgress.current} / ${staffTaskProgress.total}`,
+                assembling: 'Сборка страниц…',
+              } as Record<string, string>)[staffTaskProgress.stage] ?? staffTaskProgress.stage}
+            </span>
+          )}
           {badges.length > 0 && (
             <Button onClick={handleDeleteAll} variant="secondary" style={{ color: '#dc2626' }}>
               Удалить все

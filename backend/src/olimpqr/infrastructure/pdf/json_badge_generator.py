@@ -508,22 +508,27 @@ class JsonBadgeGenerator:
 
     @staticmethod
     def _wrap_text(text: str, font_name: str, font_size: float, max_width: float) -> list[str]:
-        """Word-wrap text to fit within max_width."""
+        """Word-wrap text to fit within max_width, honouring explicit \\n line breaks."""
         if not text:
             return [""]
-        words = text.split()
-        lines: list[str] = []
-        current = ""
-        for word in words:
-            candidate = f"{current} {word}".strip() if current else word
-            width = pdfmetrics.stringWidth(candidate, font_name, font_size)
-            if width <= max_width:
-                current = candidate
-            else:
-                if current:
-                    lines.append(current)
-                # If a single word is too long, just add it as-is
-                current = word
-        if current:
-            lines.append(current)
-        return lines or [""]
+        result_lines: list[str] = []
+        for paragraph in text.split("\n"):
+            if not paragraph.strip():
+                result_lines.append("")
+                continue
+            words = paragraph.split()
+            lines: list[str] = []
+            current = ""
+            for word in words:
+                candidate = f"{current} {word}".strip() if current else word
+                if pdfmetrics.stringWidth(candidate, font_name, font_size) <= max_width:
+                    current = candidate
+                else:
+                    if current:
+                        lines.append(current)
+                    # If a single word is too long, just add it as-is
+                    current = word
+            if current:
+                lines.append(current)
+            result_lines.extend(lines or [""])
+        return result_lines or [""]

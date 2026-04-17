@@ -407,7 +407,7 @@ async def generate_staff_badges_pdf(
 
         pdf_bytes = generator.generate_badge_pdf(config, participant_data, background_bytes)
         badge_items.append(TemplateBadgePdfItem(
-            institution=badge.institution or "Руководители",
+            institution="Руководители",
             pdf_bytes=pdf_bytes,
         ))
 
@@ -428,3 +428,22 @@ async def generate_staff_badges_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": "attachment; filename=staff_badges.pdf"},
     )
+
+
+@router.post("/generate-pdf/start")
+async def start_staff_badges_pdf(
+    request_body: StaffBadgeGenerateRequest,
+    current_user: Annotated[User, Depends(require_role(UserRole.ADMIN))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Start async staff badge PDF generation. Returns a task_id to poll for status."""
+    from ....infrastructure.tasks.badge_tasks import generate_staff_badges_pdf_task
+
+    badge_ids = [str(bid) for bid in request_body.badge_ids] if request_body.badge_ids else None
+    competition_id = str(request_body.competition_id) if request_body.competition_id else None
+
+    if not badge_ids and not competition_id:
+        raise HTTPException(status_code=400, detail="Необходимо указать competition_id или badge_ids")
+
+    task = generate_staff_badges_pdf_task.delay(competition_id, badge_ids)
+    return {"task_id": task.id}

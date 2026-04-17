@@ -20,6 +20,7 @@ from ..database.models import (
     ParticipantModel,
     BadgePhotoModel,
     BadgeTemplateModel,
+    StaffBadgeModel,
 )
 from ...config import settings
 
@@ -637,6 +638,140 @@ def generate_blanks_zip(self, competition_id: str) -> dict:
 
     except Exception as exc:
         logger.error("Blanks ZIP generation failed for %s: %s", competition_id, exc, exc_info=True)
+        return {"status": "failed", "message": str(exc)}
+    finally:
+        session.close()
+
+
+@celery_app.task(
+    name="olimpqr.generate_staff_badges_pdf",
+    bind=True,
+    max_retries=0,
+    time_limit=2700,
+    soft_time_limit=2400,
+)
+def generate_staff_badges_pdf_task(
+    self,
+    competition_id: str | None,
+    badge_ids: list[str] | None,
+) -> dict:
+    """Generate badge PDF for staff/leaders asynchronously.
+
+    Stores the resulting PDF in MinIO and returns the object name.
+    Progress is reported via Celery's update_state so the API can poll it.
+    """
+    from ..pdf.badge_template_pdf_generator import BadgeTemplatePdfGenerator, TemplateBadgePdfItem
+    from ..pdf.json_badge_generator import JsonBadgeGenerator
+    import uuid as _uuid
+
+    session = _get_sync_session()
+    try:
+        self.update_state(state="PROGRESS", meta={"stage": "loading", "current": 0, "total": 0})
+
+        # ── 1. Load staff badge records ──────────────────────────────────────
+        query = session.query(StaffBadgeModel)
+        if badge_ids:
+            parsed_ids = [_uuid.UUID(bid) for bid in badge_ids]
+            query = query.filter(StaffBadgeModel.id.in_(parsed_ids))
+        elif competition_id:
+            query = query.filter(StaffBadgeModel.competition_id == _uuid.UUID(competition_id))
+        else:
+            return {"status": "failed", "message": "Необходимо указать competition_id или badge_ids"}
+
+        badges = query.order_by(StaffBadgeModel.full_name).all()
+        if not badges:
+            return {"status": "failed", "message": "Нет бейджей для генерации"}
+
+        # ── 2. Load badge template ────────────────────────────────────────────
+        comp_id = (
+            _uuid.UUID(competition_id) if competition_id
+            else badges[0].competition_id
+        )
+        template = None
+        if comp_id:
+            template = (
+                session.query(BadgeTemplateModel)
+                .where(BadgeTemplateModel.competition_id == comp_id)
+                .first()
+            )
+        if not template:
+            return {"status": "failed", "message": "Шаблон бейджа не найден для данной олимпиады"}
+
+        config = template.config_json or {}
+        background_bytes = template.background_image_bytes
+        per_page = template.print_per_page or 4
+
+        # ── 3. Generate per-badge PDFs ────────────────────────────────────────
+        json_gen = JsonBadgeGenerator()
+        badge_items: list[TemplateBadgePdfItem] = []
+        total = len(badges)
+
+        for idx, badge in enumerate(badges, start=1):
+            self.update_state(
+                state="PROGRESS",
+                meta={"stage": "generating", "current": idx, "total": total},
+            )
+            name_parts = (badge.full_name or "").strip().split()
+            last_name = name_parts[0] if name_parts else ""
+            first_name = name_parts[1] if len(name_parts) > 1 else ""
+            middle_name = " ".join(name_parts[2:]) if len(name_parts) > 2 else ""
+
+            participant_data: dict[str, Any] = {
+                "LAST_NAME": last_name,
+                "FIRST_NAME": first_name,
+                "MIDDLE_NAME": middle_name,
+                "ROLE": badge.role or "",
+                "INSTITUTION_NAME": badge.institution or "",
+                "COMPETITION_NAME": "",
+                "QR_PAYLOAD": "",
+                "PHOTO_BYTES": badge.photo_bytes,
+            }
+            pdf_bytes_single = json_gen.generate_badge_pdf(config, participant_data, background_bytes)
+            badge_items.append(TemplateBadgePdfItem(
+                institution="Руководители",
+                pdf_bytes=pdf_bytes_single,
+            ))
+
+        # ── 4. Assemble A4 pages ──────────────────────────────────────────────
+        self.update_state(
+            state="PROGRESS",
+            meta={"stage": "assembling", "current": total, "total": total},
+        )
+        badge_w_mm = float(config.get("width_mm", 90))
+        badge_h_mm = float(config.get("height_mm", 120))
+        pdf_bytes = BadgeTemplatePdfGenerator().generate_grouped_pdf(
+            competition_name="Бейджи руководителей",
+            items=badge_items,
+            per_page=per_page,
+            badge_w_mm=badge_w_mm,
+            badge_h_mm=badge_h_mm,
+        )
+
+        # ── 5. Upload to MinIO ────────────────────────────────────────────────
+        suffix = competition_id or "custom"
+        object_name = f"{BADGE_PDF_PREFIX}/staff_badges_{suffix}.pdf"
+        storage = MinIOStorage()
+        try:
+            if not storage.client.bucket_exists(BADGE_PDF_BUCKET):
+                storage.client.make_bucket(BADGE_PDF_BUCKET)
+        except Exception:
+            pass
+        storage.upload_file(
+            bucket=BADGE_PDF_BUCKET,
+            object_name=object_name,
+            data=pdf_bytes,
+            content_type="application/pdf",
+        )
+
+        logger.info("Staff badge PDF generated: %s (%d badges)", object_name, total)
+        return {
+            "status": "completed",
+            "object_name": object_name,
+            "count": total,
+        }
+
+    except Exception as exc:
+        logger.error("Staff badge PDF generation failed: %s", exc, exc_info=True)
         return {"status": "failed", "message": str(exc)}
     finally:
         session.close()
