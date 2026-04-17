@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 # ── font registry ────────────────────────────────────────────────────────────
 
 _REGISTERED_FONTS: set[str] = set()
+_SCANNED_FONT_DIRS: set[str] = set()  # track dirs already globbed for custom fonts
+_SYSTEM_FONTS_REGISTERED: bool = False  # track whether system fonts pass was done
 
 _SYSTEM_FONT_DIRS = [
     "/usr/share/fonts/truetype/dejavu/",
@@ -55,6 +57,9 @@ def _try_register(name: str, path: str) -> bool:
 
 
 def _register_system_fonts() -> None:
+    global _SYSTEM_FONTS_REGISTERED
+    if _SYSTEM_FONTS_REGISTERED:
+        return
     for name, filename in _SYSTEM_FONT_CANDIDATES:
         if name in _REGISTERED_FONTS:
             continue
@@ -63,10 +68,15 @@ def _register_system_fonts() -> None:
             if os.path.exists(full_path):
                 _try_register(name, full_path)
                 break
+    _SYSTEM_FONTS_REGISTERED = True
 
 
 def _register_custom_fonts(fonts_dir: Path) -> None:
+    dir_key = str(fonts_dir)
+    if dir_key in _SCANNED_FONT_DIRS:
+        return
     if not fonts_dir.exists():
+        _SCANNED_FONT_DIRS.add(dir_key)
         return
     for ttf_path in fonts_dir.glob("*.ttf"):
         name = ttf_path.stem
@@ -74,6 +84,7 @@ def _register_custom_fonts(fonts_dir: Path) -> None:
     for otf_path in fonts_dir.glob("*.otf"):
         name = otf_path.stem
         _try_register(name, str(otf_path))
+    _SCANNED_FONT_DIRS.add(dir_key)
 
 
 def _resolve_font(
@@ -165,6 +176,12 @@ class JsonBadgeGenerator:
 
     def __init__(self, fonts_dir: Path | None = None):
         self.fonts_dir = fonts_dir or self.FONTS_DIR
+        # Register fonts once per instance rather than on every generate_badge_pdf call.
+        _register_system_fonts()
+        _register_custom_fonts(self.fonts_dir)
+        self._qr_cache: dict[str, bytes | None] = {}
+        self._bg_cache_key: int | None = None
+        self._bg_reader: object | None = None  # cached ImageReader for background
 
     # ------------------------------------------------------------------
     # Public API
@@ -191,9 +208,6 @@ class JsonBadgeGenerator:
         Returns:
             PDF as bytes (single page)
         """
-        _register_system_fonts()
-        _register_custom_fonts(self.fonts_dir)
-
         width_mm: float = float(config.get("width_mm", 90))
         height_mm: float = float(config.get("height_mm", 120))
         badge_w = width_mm * mm
@@ -212,11 +226,15 @@ class JsonBadgeGenerator:
         else:
             c = rl_canvas.Canvas(buf, pagesize=(badge_w, badge_h))
 
-        # Background image
+        # Background image — decode once per unique bytes object, reuse across badges
         if background_bytes:
             bg_w_mm = float(config.get("background_w_mm", width_mm))
             bg_h_mm = float(config.get("background_h_mm", height_mm))
-            self._draw_image_bytes(
+            bg_key = id(background_bytes)
+            if bg_key != self._bg_cache_key:
+                self._bg_cache_key = bg_key
+                self._bg_reader = None  # will be set inside _draw_image_bytes_cached
+            self._draw_image_bytes_cached(
                 c,
                 background_bytes,
                 x_rl=0,
@@ -498,13 +516,49 @@ class JsonBadgeGenerator:
         except Exception as exc:
             logger.warning("Cannot draw image: %s", exc)
 
+    def _draw_image_bytes_cached(
+        self,
+        c: rl_canvas.Canvas,
+        img_bytes: bytes,
+        x_rl: float,
+        y_rl: float,
+        w: float,
+        h: float,
+    ) -> None:
+        """Like _draw_image_bytes but reuses a cached ImageReader for the same bytes object."""
+        try:
+            if self._bg_reader is None:
+                from PIL import Image as PILImage
+
+                pil_img = PILImage.open(io.BytesIO(img_bytes))
+                if pil_img.mode in ("RGBA", "LA") or (
+                    pil_img.mode == "P" and "transparency" in pil_img.info
+                ):
+                    background = PILImage.new("RGB", pil_img.size, (255, 255, 255))
+                    if pil_img.mode == "P":
+                        pil_img = pil_img.convert("RGBA")
+                    background.paste(pil_img, mask=pil_img.split()[-1])
+                    buf = io.BytesIO()
+                    background.save(buf, format="PNG")
+                    buf.seek(0)
+                    self._bg_reader = ImageReader(buf)
+                else:
+                    self._bg_reader = ImageReader(io.BytesIO(img_bytes))
+            c.drawImage(self._bg_reader, x_rl, y_rl, width=w, height=h, preserveAspectRatio=False)
+        except Exception as exc:
+            logger.warning("Cannot draw cached background image: %s", exc)
+
     def _generate_qr(self, payload: str) -> bytes | None:
+        if payload in self._qr_cache:
+            return self._qr_cache[payload]
         try:
             from ...domain.services import QRService
-            return QRService().generate_qr_code(payload, error_correction="H", box_size=6, border=1)
+            result = QRService().generate_qr_code(payload, error_correction="H", box_size=6, border=1)
         except Exception as exc:
             logger.warning("QR generation failed: %s", exc)
-            return None
+            result = None
+        self._qr_cache[payload] = result
+        return result
 
     @staticmethod
     def _wrap_text(text: str, font_name: str, font_size: float, max_width: float) -> list[str]:

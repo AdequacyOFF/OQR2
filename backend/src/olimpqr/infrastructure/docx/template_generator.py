@@ -65,6 +65,7 @@ class WordTemplateGenerator:
         self.fonts_dir = self.templates_dir / "fonts"
         self.qr_service = QRService()
         self._badge_photo_index: dict[str, Path] | None = None
+        self._qr_cache: dict[str, bytes] = {}
 
     def ensure_templates_exist(self) -> None:
         """Create default templates if missing."""
@@ -443,12 +444,14 @@ class WordTemplateGenerator:
             return photo_bytes
 
     def _build_qr_png(self, payload: str) -> bytes:
-        return self.qr_service.generate_qr_code(
-            payload,
-            error_correction=settings.qr_error_correction,
-            box_size=8,
-            border=2,
-        )
+        if payload not in self._qr_cache:
+            self._qr_cache[payload] = self.qr_service.generate_qr_code(
+                payload,
+                error_correction=settings.qr_error_correction,
+                box_size=8,
+                border=2,
+            )
+        return self._qr_cache[payload]
 
     def _replace_text_tokens(self, doc: Document, mapping: dict[str, str]) -> None:
         for paragraph in self._iter_all_paragraphs(doc):
