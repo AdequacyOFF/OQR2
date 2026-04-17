@@ -504,6 +504,7 @@ class JsonBadgeGenerator:
         try:
             from PIL import Image as PILImage
 
+            PILImage.MAX_IMAGE_PIXELS = None  # suppress DecompressionBombWarning for large images
             pil_img = PILImage.open(io.BytesIO(img_bytes))
             if pil_img.mode in ("RGBA", "LA") or (
                 pil_img.mode == "P" and "transparency" in pil_img.info
@@ -537,6 +538,7 @@ class JsonBadgeGenerator:
             if self._bg_reader is None:
                 from PIL import Image as PILImage
 
+                PILImage.MAX_IMAGE_PIXELS = None  # suppress DecompressionBombWarning for large images
                 pil_img = PILImage.open(io.BytesIO(img_bytes))
                 if pil_img.mode in ("RGBA", "LA") or (
                     pil_img.mode == "P" and "transparency" in pil_img.info
