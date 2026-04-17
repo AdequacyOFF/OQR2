@@ -6,8 +6,9 @@ import io
 import logging
 import os
 import re
+import threading
 import zipfile
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 from uuid import UUID
 
@@ -35,50 +36,43 @@ BADGE_PDF_BUCKET = settings.minio_bucket_sheets
 BADGE_PDF_PREFIX = "badge-pdfs"
 
 # ── Parallel badge generation helpers ────────────────────────────────────────
-# These module-level variables are set in the *parent* Celery worker process
-# before ProcessPoolExecutor forks children. Linux fork() makes them available
-# in child processes via copy-on-write — no pickling of large photo bytes.
+# ThreadPoolExecutor is used instead of ProcessPoolExecutor because Celery runs
+# workers as daemon processes, and daemon processes cannot spawn child processes.
+# ReportLab and PIL are C extensions that release the GIL, so threads provide
+# real concurrency for PDF rendering.
 
-_w_photo_lookup: dict[str, bytes | None] = {}   # key → raw photo bytes
-_w_pdf_config: dict = {}
-_w_pdf_background: bytes | None = None
-_w_pdf_generator: Any = None                    # JsonBadgeGenerator instance
+_badge_gen_local = threading.local()  # per-thread JsonBadgeGenerator cache
 
 
-def _pdf_worker_init(config: dict, background_bytes: bytes | None) -> None:
-    """Called once per worker process after fork. Heavy data is fork-inherited."""
-    global _w_pdf_config, _w_pdf_background, _w_pdf_generator
-    from ..pdf.json_badge_generator import JsonBadgeGenerator
-    _w_pdf_config = config
-    _w_pdf_background = background_bytes
-    _w_pdf_generator = JsonBadgeGenerator()
+def _get_thread_badge_generator() -> Any:
+    """Return a per-thread JsonBadgeGenerator, created once per thread."""
+    if not hasattr(_badge_gen_local, "gen"):
+        from ..pdf.json_badge_generator import JsonBadgeGenerator
+        _badge_gen_local.gen = JsonBadgeGenerator()
+    return _badge_gen_local.gen
 
 
-def _pdf_worker_generate(args: tuple) -> bytes:
-    """Render one badge PDF.  Photo bytes looked up from fork-inherited dict."""
-    photo_key, data = args
-    participant_data = {**data, "PHOTO_BYTES": _w_photo_lookup.get(photo_key)}
-    return _w_pdf_generator.generate_badge_pdf(_w_pdf_config, participant_data, _w_pdf_background)
+def _generate_badge_in_thread(args: tuple) -> bytes:
+    """Render one badge PDF in a thread. Threads share memory — no IPC overhead."""
+    template_config, participant_data, background_bytes = args
+    gen = _get_thread_badge_generator()
+    return gen.generate_badge_pdf(template_config, participant_data, background_bytes)
 
 
 def _parallel_generate_badges(
     self_task: Any,
-    all_items: list[tuple[str, str, str, dict]],  # (photo_key, institution, full_name, data)
+    all_items: list[tuple[str, str, dict]],  # (institution, full_name, participant_data)
     template_config: dict,
     background_bytes: bytes | None,
 ) -> list[dict]:
-    """Generate badge PDFs in parallel using ProcessPoolExecutor.
+    """Generate badge PDFs in parallel using ThreadPoolExecutor.
 
     Returns list of {institution, full_name, pdf} sorted by institution/name.
-    self_task is the bound Celery task (for update_state calls).
     """
-    global _w_photo_lookup
-
     total = len(all_items)
     if total == 0:
         return []
 
-    # n_workers: leave one logical CPU for the OS / Celery main thread
     n_workers = max(1, min((os.cpu_count() or 2) - 1, total))
 
     self_task.update_state(
@@ -86,14 +80,10 @@ def _parallel_generate_badges(
         meta={"stage": "generating", "current": 0, "total": total},
     )
 
-    with ProcessPoolExecutor(
-        max_workers=n_workers,
-        initializer=_pdf_worker_init,
-        initargs=(template_config, background_bytes),
-    ) as pool:
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
         futs = [
-            pool.submit(_pdf_worker_generate, (photo_key, data))
-            for photo_key, _, _, data in all_items
+            pool.submit(_generate_badge_in_thread, (template_config, data, background_bytes))
+            for _, _, data in all_items
         ]
         fut_to_idx = {fut: i for i, fut in enumerate(futs)}
         pdf_results: list[bytes | None] = [None] * total
@@ -112,7 +102,7 @@ def _parallel_generate_badges(
 
     prepared = [
         {"institution": institution, "full_name": full_name, "pdf": pdf_results[i]}
-        for i, (_, institution, full_name, _) in enumerate(all_items)
+        for i, (institution, full_name, _) in enumerate(all_items)
         if pdf_results[i] is not None
     ]
     prepared.sort(key=lambda x: (x["institution"], x["full_name"]))
@@ -241,11 +231,10 @@ def generate_badges_pdf(self, competition_id: str) -> dict:
             template_config = badge_template.config_json or {}
             background_bytes = badge_template.background_image_bytes
 
-            # Build per-badge data list and populate fork-inherited photo lookup
-            all_items: list[tuple[str, str, str, dict]] = []
-            photo_lookup: dict[str, bytes | None] = {}
+            # Build per-badge data; threads share memory so photo bytes are free to include
+            all_items: list[tuple[str, str, dict]] = []
 
-            for i, reg in enumerate(registrations):
+            for reg in registrations:
                 participant = reg.participant
                 if not participant:
                     continue
@@ -263,10 +252,7 @@ def generate_badges_pdf(self, competition_id: str) -> dict:
                     institution=institution_name,
                     last=last, first=first, middle=middle,
                 )
-                photo_key = str(i)
-                photo_lookup[photo_key] = photo_bytes
 
-                # Data dict WITHOUT photo bytes — workers fetch via fork-inherited lookup
                 data = {
                     "LAST_NAME": last,
                     "FIRST_NAME": first,
@@ -275,12 +261,9 @@ def generate_badges_pdf(self, competition_id: str) -> dict:
                     "QR_PAYLOAD": reg.entry_token.raw_token,
                     "COMPETITION_NAME": competition.name,
                     "INSTITUTION_NAME": institution_name,
+                    "PHOTO_BYTES": photo_bytes,
                 }
-                all_items.append((photo_key, institution_name, participant.full_name or "", data))
-
-            # Expose photo bytes to worker processes before forking
-            global _w_photo_lookup
-            _w_photo_lookup = photo_lookup
+                all_items.append((institution_name, participant.full_name or "", data))
 
             prepared = _parallel_generate_badges(self, all_items, template_config, background_bytes)
             if not prepared:
@@ -784,17 +767,13 @@ def generate_staff_badges_pdf_task(
         per_page = template.print_per_page or 4
 
         # ── 3. Generate per-badge PDFs (parallel) ────────────────────────────
-        all_items: list[tuple[str, str, str, dict]] = []
-        photo_lookup: dict[str, bytes | None] = {}
+        all_items: list[tuple[str, str, dict]] = []
 
-        for i, badge in enumerate(badges):
+        for badge in badges:
             name_parts = (badge.full_name or "").strip().split()
             last_name = name_parts[0] if name_parts else ""
             first_name = name_parts[1] if len(name_parts) > 1 else ""
             middle_name = " ".join(name_parts[2:]) if len(name_parts) > 2 else ""
-
-            photo_key = str(i)
-            photo_lookup[photo_key] = badge.photo_bytes
 
             data: dict[str, Any] = {
                 "LAST_NAME": last_name,
@@ -804,11 +783,9 @@ def generate_staff_badges_pdf_task(
                 "INSTITUTION_NAME": badge.institution or "",
                 "COMPETITION_NAME": "",
                 "QR_PAYLOAD": "",
+                "PHOTO_BYTES": badge.photo_bytes,
             }
-            all_items.append((photo_key, "Руководители", badge.full_name or "", data))
-
-        global _w_photo_lookup
-        _w_photo_lookup = photo_lookup
+            all_items.append(("Руководители", badge.full_name or "", data))
 
         prepared = _parallel_generate_badges(self, all_items, config, background_bytes)
         total = len(prepared)
