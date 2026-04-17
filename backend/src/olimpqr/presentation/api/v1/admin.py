@@ -2462,22 +2462,13 @@ async def export_results_table(
     captain_tours = [tc for tc in tour_configs if tc.mode == "individual_captains"]
     team_tours = [tc for tc in tour_configs if tc.mode == "team"]
 
-    # Build captain bonus lookup: institution_name → tour_number → total_score
-    # Sources: (1) individual_captains tour totals, (2) cap_N task scores from captains_task_by_tour
+    # Build captain bonus lookup: institution_name → tour_number → captain task score only
     captain_bonus: dict[str, dict[int, int | None]] = {}
     for item in result.items:
         if item.is_captain:
             inst = item.participant_school or ""
-            for t in item.tours:
-                if any(tc.tour_number == t.tour_number for tc in captain_tours):
-                    captain_bonus.setdefault(inst, {})[t.tour_number] = t.tour_total
-            # Also include cap_N scores from captains_task_by_tour
             for tour_n, cap_score in (item.captains_task_by_tour or {}).items():
-                existing = captain_bonus.setdefault(inst, {}).get(tour_n)
-                if existing is None:
-                    captain_bonus[inst][tour_n] = cap_score
-                else:
-                    captain_bonus[inst][tour_n] = existing + cap_score
+                captain_bonus.setdefault(inst, {})[tour_n] = cap_score
 
     # Build captain time lookup for team tours: institution_name → tour_number → hh.mm.ss
     captain_time: dict[str, dict[int, str | None]] = {}

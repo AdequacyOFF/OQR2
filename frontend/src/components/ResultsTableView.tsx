@@ -247,25 +247,15 @@ function computeTeamStandings(
     if (!seen.has(inst)) { seen.add(inst); instOrder.push(inst); }
   }
 
-  // captain_bonus[inst][tourN]: mirrors Python export logic exactly
-  // (1) for individual_captains tours: captain's regular tour_total
-  // (2) + captains_task_by_tour scores (cap_N keys)
+  // captain_bonus[inst][tourN]: only the captain task score (cap_N keys)
   const captainBonus: Record<string, Record<number, number>> = {};
   for (const item of items) {
     if (!item.is_captain) continue;
     const inst = item.participant_school || '';
-    for (const tc of captainTours) {
-      const t = item.tours.find((t) => t.tour_number === tc.tour_number);
-      if (t?.tour_total != null) {
-        if (!captainBonus[inst]) captainBonus[inst] = {};
-        captainBonus[inst][tc.tour_number] =
-          (captainBonus[inst][tc.tour_number] ?? 0) + t.tour_total;
-      }
-    }
     for (const [tourNStr, capScore] of Object.entries(item.captains_task_by_tour)) {
       const tourN = Number(tourNStr);
       if (!captainBonus[inst]) captainBonus[inst] = {};
-      captainBonus[inst][tourN] = (captainBonus[inst][tourN] ?? 0) + capScore;
+      captainBonus[inst][tourN] = capScore;
     }
   }
 
