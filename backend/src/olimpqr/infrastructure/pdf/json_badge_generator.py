@@ -330,18 +330,25 @@ class JsonBadgeGenerator:
         font_name = _resolve_font(font_family, bold, italic, self.fonts_dir)
         r, g, b = _hex_to_rgb(hex_color)
 
+        # Auto-fit: reduce font size in 0.5 pt steps until all lines fit within element height.
+        # This handles multi-line role texts (e.g. "РУКОВОДИТЕЛЬ КОМАНДЫ\n(ВУЗ г.Город)")
+        # that would otherwise overflow a single-line-height element.
+        min_font_size = max(font_size * 0.5, 6.0)
+        lines = self._wrap_text(text, font_name, font_size, w_rl)
+        while font_size > min_font_size and len(lines) * font_size * 1.2 > h_rl:
+            font_size -= 0.5
+            lines = self._wrap_text(text, font_name, font_size, w_rl)
+
         c.setFont(font_name, font_size)
         c.setFillColorRGB(r, g, b)
 
-        # Word-wrap text within the element bounds
-        lines = self._wrap_text(text, font_name, font_size, w_rl)
         line_height = font_size * 1.2  # 1.2 leading
 
         # Start drawing from top of the element
         for i, line in enumerate(lines):
             line_y = y_rl + h_rl - (i + 1) * line_height
             if line_y < y_rl - line_height:
-                break  # clip to element bounds
+                break  # safety clip: should not trigger after auto-fit
 
             if align == "center":
                 line_x = x_rl + w_rl / 2
