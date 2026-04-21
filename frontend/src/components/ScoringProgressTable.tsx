@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import api from '../api/client';
 import { ScoringProgressItem, ScoringProgressResponse, TourConfig, TourTimeItem } from '../types';
 import { toRoman } from '../utils/roman';
@@ -107,8 +107,6 @@ const ScoringProgressTable: React.FC<Props> = ({
   const [error, setError] = useState<string | null>(null);
   const [sortKeys, setSortKeys] = useState<SortKey[]>([{ col: 'total', dir: 'desc' }]);
   const [filterMode, setFilterMode] = useState<FilterMode>('all');
-  const highlightRef = useRef<HTMLTableRowElement | null>(null);
-
   const fetchProgress = async () => {
     setLoading(true);
     setError(null);
@@ -137,13 +135,6 @@ const ScoringProgressTable: React.FC<Props> = ({
     const interval = setInterval(fetchProgress, 30000);
     return () => clearInterval(interval);
   }, [competitionId]);
-
-  // Scroll highlighted row into view
-  useEffect(() => {
-    if (highlightRef.current) {
-      highlightRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
-  }, [highlightAttemptId, data]);
 
   const handleHeaderClick = (col: string, e: React.MouseEvent) => {
     if (e.shiftKey) {
@@ -570,7 +561,6 @@ const ScoringProgressTable: React.FC<Props> = ({
                 return (
                   <tr
                     key={item.registration_id}
-                    ref={isHighlighted ? highlightRef : null}
                     style={{
                       background: isHighlighted
                         ? '#fef9c3'
