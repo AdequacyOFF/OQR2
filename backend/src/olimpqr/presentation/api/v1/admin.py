@@ -2320,12 +2320,12 @@ async def import_results_table(
                 continue
 
             task_nums = tcm["task_numbers"] or list(range(1, tcm["n_tasks"] + 1))
-            scores: dict[int, int] = {}
+            scores: dict[int, float] = {}
 
             for i, col in enumerate(tcm["task_cols"]):
                 cell_val = ws.cell(row=row_idx, column=col).value
                 if cell_val is not None and isinstance(cell_val, (int, float)):
-                    scores[task_nums[i]] = int(cell_val)
+                    scores[task_nums[i]] = float(cell_val)
 
             tour_time_str = _parse_time_cell(ws.cell(row=row_idx, column=tcm["time_col"]).value)
 
@@ -2340,11 +2340,11 @@ async def import_results_table(
             # Import captain task scores and time (scoring-progress format only)
             cap_task_cols = tcm.get("cap_task_cols") or []
             if cap_task_cols:
-                cap_scores: dict[int, int] = {}
+                cap_scores: dict[int, float] = {}
                 for cap_num, col in cap_task_cols:
                     v = ws.cell(row=row_idx, column=col).value
                     if v is not None and isinstance(v, (int, float)):
-                        cap_scores[cap_num] = int(v)
+                        cap_scores[cap_num] = float(v)
                 cap_time_str: str | None = None
                 if tcm.get("cap_task_time_col"):
                     cap_time_str = _parse_time_cell(

@@ -57,8 +57,8 @@ class AttemptModel(Base):
         default=AttemptStatus.PRINTED,
         index=True
     )
-    score_total: Mapped[Optional[int]] = mapped_column(
-        Integer,
+    score_total: Mapped[Optional[float]] = mapped_column(
+        Float,
         nullable=True
     )
     confidence: Mapped[Optional[float]] = mapped_column(

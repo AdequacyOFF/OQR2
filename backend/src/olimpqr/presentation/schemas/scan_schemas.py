@@ -38,7 +38,7 @@ class ScanListResponse(BaseModel):
 
 class VerifyScoreRequest(BaseModel):
     """Manual score verification / correction."""
-    corrected_score: int = Field(..., ge=0, description="Corrected score value")
+    corrected_score: float = Field(..., ge=0, description="Corrected score value")
     attempt_id: Optional[UUID] = Field(None, description="Attempt to link if QR was not detected")
 
 
@@ -46,13 +46,13 @@ class VerifyScoreResponse(BaseModel):
     """Response after manual score verification."""
     scan_id: UUID
     attempt_id: UUID
-    score: int
+    score: float
     verified_by: UUID
 
 
 class ApplyScoreRequest(BaseModel):
     """Apply score to attempt."""
-    score: int = Field(..., ge=0)
+    score: float = Field(..., ge=0)
 
 
 class AttemptResponse(BaseModel):
@@ -61,7 +61,7 @@ class AttemptResponse(BaseModel):
     registration_id: UUID
     variant_number: int
     status: str
-    score_total: Optional[int]
+    score_total: Optional[float]
     confidence: Optional[float]
     pdf_file_path: Optional[str]
     task_scores: Optional[dict] = None
@@ -106,7 +106,7 @@ class ResolveQRResponse(BaseModel):
 class TaskScoreItem(BaseModel):
     """Score for a single task."""
     task_number: int = Field(..., ge=1)
-    score: int = Field(..., ge=0)
+    score: float = Field(..., ge=0)
 
 
 class QRScoreEntryRequest(BaseModel):

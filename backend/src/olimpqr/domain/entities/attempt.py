@@ -28,7 +28,7 @@ class Attempt:
     sheet_token_hash: TokenHash
     id: UUID = field(default_factory=uuid4)
     status: AttemptStatus = AttemptStatus.PRINTED
-    score_total: int | None = None
+    score_total: float | None = None
     confidence: float | None = None
     pdf_file_path: str | None = None
     task_scores: dict | None = None
@@ -48,7 +48,7 @@ class Attempt:
         self.status = AttemptStatus.SCANNED
         self.updated_at = datetime.utcnow()
 
-    def apply_score(self, score: int, confidence: float | None = None):
+    def apply_score(self, score: float, confidence: float | None = None):
         """Apply score to attempt.
 
         Args:
@@ -77,7 +77,7 @@ class Attempt:
     def apply_task_scores(
         self,
         tour_number: int,
-        scores: dict[int, int],
+        scores: dict[int, float],
         tour_time: str | None = None,
         is_captains_task: bool = False,
     ) -> None:
@@ -103,7 +103,7 @@ class Attempt:
 
         if is_captains_task:
             # Captain task scores stored separately with tour reference — not counted in personal total
-            cap_data: dict[str, int | str] = {str(k): v for k, v in scores.items()}
+            cap_data: dict[str, float | str] = {str(k): v for k, v in scores.items()}
             if tour_time is not None:
                 cap_data["time"] = tour_time
             elif (
@@ -114,7 +114,7 @@ class Attempt:
                 cap_data["time"] = current[f"cap_{tour_number}"]["time"]
             current[f"cap_{tour_number}"] = cap_data
         else:
-            tour_data: dict[str, int | str] = {str(k): v for k, v in scores.items()}
+            tour_data: dict[str, float | str] = {str(k): v for k, v in scores.items()}
             if tour_time is not None:
                 tour_data["time"] = tour_time
             elif str(tour_number) in current and isinstance(current[str(tour_number)], dict) and "time" in current[str(tour_number)]:
@@ -132,7 +132,7 @@ class Attempt:
             if not isinstance(tdata, dict):
                 continue
             for field_key, val in tdata.items():
-                if field_key != "time" and isinstance(val, int):
+                if field_key != "time" and isinstance(val, (int, float)):
                     total += val
         self.score_total = total
         self.status = AttemptStatus.SCORED

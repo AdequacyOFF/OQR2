@@ -11,8 +11,8 @@ class ResultEntry(BaseModel):
     participant_name: str
     school: str
     grade: int | None = None
-    score: int
-    max_score: int
+    score: float
+    max_score: float
 
 
 class CompetitionResultsResponse(BaseModel):

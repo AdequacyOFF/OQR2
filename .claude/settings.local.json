@@ -85,7 +85,9 @@
       "Bash(grep -E \"\\\\.py$\")",
       "Bash(PYTHONPATH=/d/Projects/Kafedra/OQR2/backend/src poetry run pytest tests/unit/test_entities.py --no-cov -q --no-header)",
       "Bash(PYTHONPATH=/d/Projects/Kafedra/OQR2/backend/src poetry run pytest tests/unit/test_entities.py::TestAttempt --no-cov -v --no-header)",
-      "Bash(PYTHONPATH=/d/Projects/Kafedra/OQR2/backend/src poetry run pytest tests/unit/test_entities.py::TestAttempt --no-cov -q --no-header)"
+      "Bash(PYTHONPATH=/d/Projects/Kafedra/OQR2/backend/src poetry run pytest tests/unit/test_entities.py::TestAttempt --no-cov -q --no-header)",
+      "Bash(PYTHONPATH=/d/Projects/Kafedra/OQR2/backend/src poetry run pytest tests/unit/ --no-cov -q --no-header)",
+      "Bash(PYTHONPATH=/d/Projects/Kafedra/OQR2/backend/src poetry run pytest tests/unit/test_entities.py -k \"Attempt\" --no-cov -q)"
     ],
     "deny": [],
     "ask": []

@@ -468,7 +468,7 @@ async def qr_score_entry(
     if not attempt:
         raise HTTPException(status_code=404, detail="Попытка не найдена")
 
-    scores_dict: dict[int, int] = {item.task_number: item.score for item in body.task_scores}
+    scores_dict: dict[int, float] = {item.task_number: item.score for item in body.task_scores}
 
     try:
         attempt.apply_task_scores(

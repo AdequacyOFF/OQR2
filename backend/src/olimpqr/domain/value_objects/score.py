@@ -12,8 +12,8 @@ class Score:
         max_value: Maximum possible score for the competition
         confidence: OCR confidence level (0.0-1.0), None if manually entered
     """
-    value: int
-    max_value: int
+    value: float
+    max_value: float
     confidence: float | None = None
 
     def __post_init__(self):

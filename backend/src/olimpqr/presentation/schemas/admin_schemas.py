@@ -126,8 +126,8 @@ class AdminRegistrationListResponse(BaseModel):
 class TourProgress(BaseModel):
     """Score progress for a single tour."""
     tour_number: int
-    task_scores: Optional[Dict[str, int]] = None
-    tour_total: Optional[int] = None
+    task_scores: Optional[Dict[str, float]] = None
+    tour_total: Optional[float] = None
     tour_time: Optional[str] = None
 
 
@@ -164,9 +164,9 @@ class ScoringProgressItem(BaseModel):
     attempt_id: Optional[UUID] = None
     attempt_status: Optional[str] = None
     tours: list["TourProgress"] = []
-    score_total: Optional[int] = None
+    score_total: Optional[float] = None
     is_captain: bool = False
-    captains_task_by_tour: dict[int, int] = {}
+    captains_task_by_tour: dict[int, float] = {}
 
 
 class ScoringProgressResponse(BaseModel):

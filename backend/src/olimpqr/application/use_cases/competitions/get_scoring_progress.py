@@ -33,8 +33,8 @@ class ScoringProgressItemResult:
     tours: list[TourProgressResult] = field(default_factory=list)
     score_total: int | None = None
     is_captain: bool = False
-    captains_task_by_tour: dict[int, int] = field(default_factory=dict)  # tour_number → captain bonus score total
-    captains_task_scores_by_tour: dict[int, dict[str, int]] = field(default_factory=dict)  # tour_number → {task_num_str → score}
+    captains_task_by_tour: dict[int, float] = field(default_factory=dict)  # tour_number → captain bonus score total
+    captains_task_scores_by_tour: dict[int, dict[str, float]] = field(default_factory=dict)  # tour_number → {task_num_str → score}
     captains_task_time_by_tour: dict[int, str] = field(default_factory=dict)  # tour_number → hh.mm.ss
 
 
@@ -96,14 +96,14 @@ class GetScoringProgressUseCase:
             tour_progress: list[TourProgressResult] = []
             if competition.is_special and tours_count > 0:
                 for tour_num in range(1, tours_count + 1):
-                    task_scores: dict[str, int] | None = None
-                    tour_total: int | None = None
+                    task_scores: dict[str, float] | None = None
+                    tour_total: float | None = None
                     tour_time: str | None = None
                     if attempt and attempt.task_scores:
                         raw = attempt.task_scores.get(str(tour_num))
                         if raw:
                             tour_time = raw.get("time") if isinstance(raw.get("time"), str) else None
-                            task_scores = {str(k): int(v) for k, v in raw.items() if k != "time" and isinstance(v, int)}
+                            task_scores = {str(k): float(v) for k, v in raw.items() if k != "time" and isinstance(v, (int, float))}
                             tour_total = sum(task_scores.values())
                     tour_progress.append(TourProgressResult(
                         tour_number=tour_num,
@@ -112,15 +112,15 @@ class GetScoringProgressUseCase:
                         tour_time=tour_time,
                     ))
 
-            captains_task_by_tour: dict[int, int] = {}
-            captains_task_scores_by_tour: dict[int, dict[str, int]] = {}
+            captains_task_by_tour: dict[int, float] = {}
+            captains_task_scores_by_tour: dict[int, dict[str, float]] = {}
             captains_task_time_by_tour: dict[int, str] = {}
             if attempt and attempt.task_scores:
                 for key, val in attempt.task_scores.items():
                     if key.startswith("cap_") and isinstance(val, dict):
                         try:
                             tour_n = int(key[4:])
-                            cap_scores = {str(k): int(v) for k, v in val.items() if isinstance(v, int)}
+                            cap_scores = {str(k): float(v) for k, v in val.items() if isinstance(v, (int, float))}
                             captains_task_by_tour[tour_n] = sum(cap_scores.values())
                             captains_task_scores_by_tour[tour_n] = cap_scores
                             cap_time = val.get("time")

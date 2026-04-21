@@ -110,7 +110,7 @@ const ManualQRScoringPage: React.FC = () => {
 
     const taskScoreList = Object.entries(taskScores).map(([task, score]) => ({
       task_number: parseInt(task),
-      score: parseInt(score) || 0,
+      score: parseFloat(score) || 0,
     }));
 
     try {
@@ -134,7 +134,7 @@ const ManualQRScoringPage: React.FC = () => {
           tour_number: resolved.tour_number ?? 1,
           task_scores: capEntries.map(([task, score]) => ({
             task_number: parseInt(task),
-            score: parseInt(score) || 0,
+            score: parseFloat(score) || 0,
           })),
           is_captains_task: true,
         };
@@ -185,7 +185,7 @@ const ManualQRScoringPage: React.FC = () => {
   };
 
   const totalScore = Object.values(taskScores).reduce(
-    (sum, v) => sum + (parseInt(v) || 0),
+    (sum, v) => sum + (parseFloat(v) || 0),
     0
   );
 
@@ -355,6 +355,7 @@ const ManualQRScoringPage: React.FC = () => {
                   <input
                     type="number"
                     min="0"
+                    step="any"
                     value={taskScores[1] ?? ''}
                     onChange={(e) => setTaskScores({ 1: e.target.value })}
                     style={{
@@ -380,6 +381,7 @@ const ManualQRScoringPage: React.FC = () => {
                         <input
                           type="number"
                           min="0"
+                          step="any"
                           value={taskScores[taskNum] ?? ''}
                           onChange={(e) =>
                             setTaskScores((prev) => ({ ...prev, [taskNum]: e.target.value }))
@@ -480,6 +482,7 @@ const ManualQRScoringPage: React.FC = () => {
                             <input
                               type="number"
                               min="0"
+                              step="any"
                               value={captainTaskScores[n] ?? ''}
                               onChange={(e) =>
                                 setCaptainTaskScores((prev) => ({ ...prev, [n]: e.target.value }))
