@@ -82,7 +82,10 @@
       "Bash(grep -E \"\\\\.\\(tsx?|jsx?\\)$\")",
       "Bash(grep -E \"\\\\.\\(tsx|ts|jsx|js\\)$\")",
       "Bash(grep -E \"\\\\.\\(py|sql\\)$\")",
-      "Bash(grep -E \"\\\\.py$\")"
+      "Bash(grep -E \"\\\\.py$\")",
+      "Bash(PYTHONPATH=/d/Projects/Kafedra/OQR2/backend/src poetry run pytest tests/unit/test_entities.py --no-cov -q --no-header)",
+      "Bash(PYTHONPATH=/d/Projects/Kafedra/OQR2/backend/src poetry run pytest tests/unit/test_entities.py::TestAttempt --no-cov -v --no-header)",
+      "Bash(PYTHONPATH=/d/Projects/Kafedra/OQR2/backend/src poetry run pytest tests/unit/test_entities.py::TestAttempt --no-cov -q --no-header)"
     ],
     "deny": [],
     "ask": []

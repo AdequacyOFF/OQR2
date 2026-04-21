@@ -54,6 +54,8 @@ const ManualQRScoringPage: React.FC = () => {
   const [captainTaskScores, setCaptainTaskScores] = useState<Record<number, string>>({});
   const [tourStart, setTourStart] = useState('');
   const [tourEnd, setTourEnd] = useState('');
+  const [captainTaskStart, setCaptainTaskStart] = useState('');
+  const [captainTaskEnd, setCaptainTaskEnd] = useState('');
   const [resultAttempt, setResultAttempt] = useState<AttemptResponse | null>(null);
 
   // Progress table state
@@ -127,7 +129,7 @@ const ManualQRScoringPage: React.FC = () => {
       // If captain in individual_captains tour and captain task scores were entered, submit them too
       const capEntries = Object.entries(captainTaskScores).filter(([, v]) => v !== '');
       if (!resolved.is_captains_task && capEntries.length > 0) {
-        const capPayload = {
+        const capPayload: Record<string, unknown> = {
           attempt_id: resolved.attempt_id,
           tour_number: resolved.tour_number ?? 1,
           task_scores: capEntries.map(([task, score]) => ({
@@ -136,6 +138,8 @@ const ManualQRScoringPage: React.FC = () => {
           })),
           is_captains_task: true,
         };
+        const capTime = computeTourTime(captainTaskStart, captainTaskEnd);
+        if (capTime) capPayload.tour_time = capTime;
         await api.post<AttemptResponse>('scans/qr-score-entry', capPayload);
       }
 
@@ -172,6 +176,8 @@ const ManualQRScoringPage: React.FC = () => {
     setCaptainTaskScores({});
     setTourStart('');
     setTourEnd('');
+    setCaptainTaskStart('');
+    setCaptainTaskEnd('');
     setResultAttempt(null);
     setError(null);
     setLaserInput('');
@@ -488,6 +494,44 @@ const ManualQRScoringPage: React.FC = () => {
                             />
                           </div>
                         ))}
+                      </div>
+                      <div style={{ marginTop: 12 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6, color: '#92400e' }}>
+                          Время задания капитана (необязательно):
+                        </div>
+                        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <label style={{ fontSize: 13, minWidth: 60 }}>Начало:</label>
+                            <input
+                              type="time"
+                              value={captainTaskStart}
+                              onChange={(e) => setCaptainTaskStart(e.target.value)}
+                              style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #f59e0b', fontSize: 14 }}
+                            />
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <label style={{ fontSize: 13, minWidth: 60 }}>Конец:</label>
+                            <input
+                              type="time"
+                              value={captainTaskEnd}
+                              onChange={(e) => setCaptainTaskEnd(e.target.value)}
+                              style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #f59e0b', fontSize: 14 }}
+                            />
+                          </div>
+                        </div>
+                        {captainTaskStart && captainTaskEnd && (() => {
+                          const ct = computeTourTime(captainTaskStart, captainTaskEnd);
+                          if (!ct) return (
+                            <div style={{ fontSize: 12, color: '#dc2626', marginTop: 4 }}>
+                              Время конца должно быть позже начала
+                            </div>
+                          );
+                          return (
+                            <div style={{ fontSize: 12, color: '#15803d', marginTop: 4 }}>
+                              Продолжительность: {ct.replace(/\./g, ':')}
+                            </div>
+                          );
+                        })()}
                       </div>
                     </div>
                   )}

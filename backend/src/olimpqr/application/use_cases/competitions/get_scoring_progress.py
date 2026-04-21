@@ -35,6 +35,7 @@ class ScoringProgressItemResult:
     is_captain: bool = False
     captains_task_by_tour: dict[int, int] = field(default_factory=dict)  # tour_number → captain bonus score total
     captains_task_scores_by_tour: dict[int, dict[str, int]] = field(default_factory=dict)  # tour_number → {task_num_str → score}
+    captains_task_time_by_tour: dict[int, str] = field(default_factory=dict)  # tour_number → hh.mm.ss
 
 
 @dataclass
@@ -113,6 +114,7 @@ class GetScoringProgressUseCase:
 
             captains_task_by_tour: dict[int, int] = {}
             captains_task_scores_by_tour: dict[int, dict[str, int]] = {}
+            captains_task_time_by_tour: dict[int, str] = {}
             if attempt and attempt.task_scores:
                 for key, val in attempt.task_scores.items():
                     if key.startswith("cap_") and isinstance(val, dict):
@@ -121,6 +123,9 @@ class GetScoringProgressUseCase:
                             cap_scores = {str(k): int(v) for k, v in val.items() if isinstance(v, int)}
                             captains_task_by_tour[tour_n] = sum(cap_scores.values())
                             captains_task_scores_by_tour[tour_n] = cap_scores
+                            cap_time = val.get("time")
+                            if isinstance(cap_time, str):
+                                captains_task_time_by_tour[tour_n] = cap_time
                         except (ValueError, TypeError):
                             pass
 
@@ -137,6 +142,7 @@ class GetScoringProgressUseCase:
                 is_captain=getattr(participant, 'is_captain', False) or False,
                 captains_task_by_tour=captains_task_by_tour,
                 captains_task_scores_by_tour=captains_task_scores_by_tour,
+                captains_task_time_by_tour=captains_task_time_by_tour,
             ))
 
         return ScoringProgressResult(

@@ -103,7 +103,16 @@ class Attempt:
 
         if is_captains_task:
             # Captain task scores stored separately with tour reference — not counted in personal total
-            current[f"cap_{tour_number}"] = {str(k): v for k, v in scores.items()}
+            cap_data: dict[str, int | str] = {str(k): v for k, v in scores.items()}
+            if tour_time is not None:
+                cap_data["time"] = tour_time
+            elif (
+                f"cap_{tour_number}" in current
+                and isinstance(current[f"cap_{tour_number}"], dict)
+                and "time" in current[f"cap_{tour_number}"]
+            ):
+                cap_data["time"] = current[f"cap_{tour_number}"]["time"]
+            current[f"cap_{tour_number}"] = cap_data
         else:
             tour_data: dict[str, int | str] = {str(k): v for k, v in scores.items()}
             if tour_time is not None:

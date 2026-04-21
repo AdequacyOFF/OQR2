@@ -1974,6 +1974,7 @@ async def export_scoring_progress_excel(
         # captain task columns: tour_number -> list of (cap_task_num, col_index)
         cap_task_col_map: dict[int, list[tuple[int, int]]] = {}
         cap_task_total_col_map: dict[int, int] = {}  # tour_number -> total cap score column index
+        cap_task_time_col_map: dict[int, int] = {}   # tour_number -> captain task time column index
         col_headers: list[str] = list(fixed_cols)
         for tc in tour_configs:
             start = len(col_headers) + 1
@@ -1988,10 +1989,12 @@ async def export_scoring_progress_excel(
                 cap_task_col_map[tc.tour_number] = cap_cols
                 cap_task_total_col_map[tc.tour_number] = len(col_headers) + 1
                 col_headers.append("Итог к.з.")
+                cap_task_time_col_map[tc.tour_number] = len(col_headers) + 1
+                col_headers.append("Время к.з.")
             col_headers.append("Итог тура")
             tour_time_col_map[tc.tour_number] = len(col_headers) + 1
             col_headers.append("Время тура")
-            n_cap_cols = (len(tc.captains_task_numbers) + 1) if (tc.captains_task and tc.captains_task_numbers) else 0
+            n_cap_cols = (len(tc.captains_task_numbers) + 2) if (tc.captains_task and tc.captains_task_numbers) else 0
             span = len(tc.task_numbers) + 2 + n_cap_cols
             tour_col_spans.append((start, span))
         col_headers.append("ИТОГО")
@@ -2062,6 +2065,7 @@ async def export_scoring_progress_excel(
                     for cap_num in tc.captains_task_numbers:
                         row_data.append(cap_scores.get(str(cap_num)))
                     row_data.append(item.captains_task_by_tour.get(tc.tour_number))
+                    row_data.append(None)  # Время к.з. placeholder — written below
                 row_data.append(tour.tour_total if tour else None)
                 row_data.append(None)  # time placeholder — written below with number_format
             row_data.append(item.score_total)
@@ -2079,6 +2083,16 @@ async def export_scoring_progress_excel(
                 cell.border = border
                 if time_val is not None:
                     cell.number_format = '[h]:mm:ss'
+                # Captain task time column
+                if tc.tour_number in cap_task_time_col_map:
+                    cap_t = item.captains_task_time_by_tour.get(tc.tour_number)
+                    cap_time_val = _parse_tour_time_str(cap_t)
+                    cap_t_cell = ws.cell(row=data_row, column=cap_task_time_col_map[tc.tour_number])
+                    cap_t_cell.value = cap_time_val
+                    cap_t_cell.alignment = center
+                    cap_t_cell.border = border
+                    if cap_time_val is not None:
+                        cap_t_cell.number_format = '[h]:mm:ss'
 
         # Set column widths
         ws.column_dimensions[get_column_letter(1)].width = 30  # ВУЗ
@@ -2181,25 +2195,59 @@ async def import_results_table(
 
     tour_col_map: dict[int, dict] = {}
 
+    def _parse_time_cell(time_val) -> str | None:
+        """Parse an xlsx time cell value into hh.mm.ss string or None."""
+        if time_val is None:
+            return None
+        from datetime import timedelta
+        if isinstance(time_val, timedelta):
+            total_secs = int(time_val.total_seconds())
+            h = total_secs // 3600
+            m = (total_secs % 3600) // 60
+            s = total_secs % 60
+            return f"{h:02d}.{m:02d}.{s:02d}"
+        if isinstance(time_val, str) and re.match(r"^\d{2}\.\d{2}\.\d{2}$", time_val):
+            return time_val
+        if isinstance(time_val, float) and 0.0 <= time_val < 1.0:
+            total_secs = int(round(time_val * 86400))
+            h = total_secs // 3600
+            m = (total_secs % 3600) // 60
+            s = total_secs % 60
+            return f"{h:02d}.{m:02d}.{s:02d}"
+        return None
+
     if is_scoring_progress_format:
         # Scoring-progress format: A=ВУЗ, B=ФИО, C=Капитан, D=Вариант, then per-tour blocks
+        # Column layout per tour (matches export_scoring_progress_excel):
+        #   tasks(N) + [cap_tasks(M) + итог_кз(1) + время_кз(1)] + итог_тура(1) + время_тура(1)
         DATA_ROW = 5
         name_col = 2  # column B = ФИО
         ci = 5  # first tour data column (after A, B, C, D)
         for tc in tour_configs:
             n_tasks = len(tc.task_numbers) if tc.task_numbers else 1
-            task_cols = list(range(ci, ci + n_tasks))
-            total_col_skip = ci + n_tasks
-            time_col = ci + n_tasks + 1
-            ci += n_tasks + 2  # tasks + total + time
+            task_cols = list(range(ci, ci + n_tasks)); ci += n_tasks
+            cap_task_cols: list[tuple[int, int]] = []
+            cap_task_time_col: int | None = None
+            if tc.captains_task and tc.captains_task_numbers:
+                for cap_num in tc.captains_task_numbers:
+                    cap_task_cols.append((cap_num, ci)); ci += 1
+                ci += 1  # Итог к.з. (skip)
+                cap_task_time_col = ci; ci += 1  # Время к.з.
+            ci += 1  # Итог тура (skip)
+            time_col = ci; ci += 1  # Время тура
             tour_col_map[tc.tour_number] = {
                 "task_cols": task_cols,
                 "n_tasks": n_tasks,
                 "task_numbers": tc.task_numbers,
                 "time_col": time_col,
+                "cap_task_cols": cap_task_cols,
+                "cap_task_time_col": cap_task_time_col,
             }
     else:
         # Results-table format: B=№, C=ВУЗ, D=ФИО, then per-tour blocks
+        # Column layout per individual tour (matches export_results_table Sheet 1):
+        #   tasks(N) + итого_баллов(1) + время(1) + место(1)
+        # (No captain task columns in Sheet 1)
         DATA_ROW = 5
         ci = 2
         ci += 1  # num_col (B)
@@ -2216,6 +2264,8 @@ async def import_results_table(
                 "n_tasks": n_tasks,
                 "task_numbers": tc.task_numbers,
                 "time_col": time_col,
+                "cap_task_cols": [],
+                "cap_task_time_col": None,
             }
 
     # Load all participants with attempts
@@ -2277,25 +2327,7 @@ async def import_results_table(
                 if cell_val is not None and isinstance(cell_val, (int, float)):
                     scores[task_nums[i]] = int(cell_val)
 
-            # Parse time from time column
-            tour_time_str = None
-            time_val = ws.cell(row=row_idx, column=tcm["time_col"]).value
-            if time_val is not None:
-                from datetime import timedelta
-                if isinstance(time_val, timedelta):
-                    total_secs = int(time_val.total_seconds())
-                    h = total_secs // 3600
-                    m = (total_secs % 3600) // 60
-                    s = total_secs % 60
-                    tour_time_str = f"{h:02d}.{m:02d}.{s:02d}"
-                elif isinstance(time_val, str) and re.match(r"^\d{2}\.\d{2}\.\d{2}$", time_val):
-                    tour_time_str = time_val
-                elif isinstance(time_val, float) and 0.0 <= time_val < 1.0:
-                    total_secs = int(round(time_val * 86400))
-                    h = total_secs // 3600
-                    m = (total_secs % 3600) // 60
-                    s = total_secs % 60
-                    tour_time_str = f"{h:02d}.{m:02d}.{s:02d}"
+            tour_time_str = _parse_time_cell(ws.cell(row=row_idx, column=tcm["time_col"]).value)
 
             if scores:
                 attempt.apply_task_scores(
@@ -2304,6 +2336,28 @@ async def import_results_table(
                     tour_time=tour_time_str,
                 )
                 changed = True
+
+            # Import captain task scores and time (scoring-progress format only)
+            cap_task_cols = tcm.get("cap_task_cols") or []
+            if cap_task_cols:
+                cap_scores: dict[int, int] = {}
+                for cap_num, col in cap_task_cols:
+                    v = ws.cell(row=row_idx, column=col).value
+                    if v is not None and isinstance(v, (int, float)):
+                        cap_scores[cap_num] = int(v)
+                cap_time_str: str | None = None
+                if tcm.get("cap_task_time_col"):
+                    cap_time_str = _parse_time_cell(
+                        ws.cell(row=row_idx, column=tcm["cap_task_time_col"]).value
+                    )
+                if cap_scores:
+                    attempt.apply_task_scores(
+                        tour_number=tc.tour_number,
+                        scores=cap_scores,
+                        tour_time=cap_time_str,
+                        is_captains_task=True,
+                    )
+                    changed = True
 
         if changed:
             await attempt_repo.update(attempt)
@@ -2478,6 +2532,14 @@ async def export_results_table(
             for t in item.tours:
                 if any(tc.tour_number == t.tour_number for tc in team_tours) and t.tour_time:
                     captain_time.setdefault(inst, {})[t.tour_number] = t.tour_time
+
+    # Build captain task time lookup: institution_name → tour_number → hh.mm.ss
+    captain_task_time: dict[str, dict[int, str | None]] = {}
+    for item in result.items:
+        if item.is_captain:
+            inst = item.participant_school or ""
+            for tour_n, t_str in (item.captains_task_time_by_tour or {}).items():
+                captain_task_time.setdefault(inst, {})[tour_n] = t_str
 
     # Build team tour data: institution_name → tour_number → total_score
     team_tour_data: dict[str, dict[int, int | None]] = {}
@@ -2716,11 +2778,13 @@ async def export_results_table(
 
         tour2_col_map: dict[int, dict] = {}
 
-        # Individual tour columns in sheet 2: bonus(if captains), total(SUMIF), time(SUMIF), rank
+        # Individual tour columns in sheet 2: bonus(if captains), bonus_time(if captains), total(SUMIF), time(SUMIF), rank
         for tc in individual_tours:
             bonus_col = None
+            bonus_time_col = None
             if tc.mode == "individual_captains":
                 bonus_col = ci2; ci2 += 1
+                bonus_time_col = ci2; ci2 += 1
             total2_col = ci2; ci2 += 1
             time2_col = ci2; ci2 += 1
             rank2_col = ci2; ci2 += 1
@@ -2729,6 +2793,7 @@ async def export_results_table(
                 "time_col": time2_col,
                 "rank_col": rank2_col,
                 "bonus_col": bonus_col,
+                "bonus_time_col": bonus_time_col,
                 "mode": tc.mode,
             }
 
@@ -2780,6 +2845,7 @@ async def export_results_table(
 
             if tm["bonus_col"]:
                 _h(ws2.cell(row=6, column=tm["bonus_col"]), "Доп. задание (капитан)")
+                _h(ws2.cell(row=6, column=tm["bonus_time_col"]), "Время к.з.")
             _h(ws2.cell(row=6, column=tm["total_col"]), "Итого баллов")
             _h(ws2.cell(row=6, column=tm["time_col"]), "Время выполнения")
             _h(ws2.cell(row=6, column=tm["rank_col"]), "Место")
@@ -2842,17 +2908,23 @@ async def export_results_table(
                     f"'{s1_name}'!${s1_time_cl}:${s1_time_cl})"
                 )
 
-                # If captain bonus: total includes bonus column
+                # If captain bonus: total includes bonus column; time includes captain task time
                 if tm["bonus_col"]:
                     bonus_val = captain_bonus.get(inst, {}).get(tc.tour_number)
                     _d(ws2.cell(row=row, column=tm["bonus_col"]), bonus_val)
+                    cap_t_str = captain_task_time.get(inst, {}).get(tc.tour_number)
+                    cap_t_val = _parse_hms(cap_t_str) if cap_t_str else None
+                    _dt(ws2.cell(row=row, column=tm["bonus_time_col"]), cap_t_val)
+                    ws2.cell(row=row, column=tm["bonus_time_col"]).number_format = '[h]:mm:ss'
                     bonus_ref = f"{get_column_letter(tm['bonus_col'])}{row}"
+                    bonus_time_ref = f"{get_column_letter(tm['bonus_time_col'])}{row}"
                     _c(ws2.cell(row=row, column=tm["total_col"]),
                        f"{sumif_total}+{bonus_ref}")
+                    _c(ws2.cell(row=row, column=tm["time_col"]), f"{sumif_time}+{bonus_time_ref}")
                 else:
                     _c(ws2.cell(row=row, column=tm["total_col"]), sumif_total)
+                    _c(ws2.cell(row=row, column=tm["time_col"]), sumif_time)
 
-                _c(ws2.cell(row=row, column=tm["time_col"]), sumif_time)
                 ws2.cell(row=row, column=tm["time_col"]).number_format = '[h]:mm:ss'
 
                 # Rank for this tour
@@ -2916,6 +2988,7 @@ async def export_results_table(
             ws2.column_dimensions[get_column_letter(tm["rank_col"])].width = 8
             if tm["bonus_col"]:
                 ws2.column_dimensions[get_column_letter(tm["bonus_col"])].width = 18
+                ws2.column_dimensions[get_column_letter(tm["bonus_time_col"])].width = 13
         for tm in team2_col_map.values():
             ws2.column_dimensions[get_column_letter(tm["total_col"])].width = 13
             ws2.column_dimensions[get_column_letter(tm["time_col"])].width = 13
